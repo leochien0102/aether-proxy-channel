@@ -88,13 +88,18 @@ jobs:
       - name: Check that every package was built
         env:
           ARCH: ${{ matrix.arch }}
+          SDK: ${{ matrix.sdk }}
         run: |
           set -eu
           dir="bin/packages/$ARCH/channel"
           ls -la "$dir"
+          # 24.10 SDKs produce ipk, 25.12 SDKs apk; check the one this SDK makes.
           for package in xray-core aether-proxy luci-app-aether-proxy luci-i18n-aether-proxy-zh-cn; do
-            ls "$dir/${package}"_*.ipk "$dir/${package}"-[0-9]*.apk >/dev/null 2>&1 || {
-              echo "::error::$package missing in $dir"; exit 1; }
+            case "$SDK" in
+              24.*) pattern="$dir/${package}_*.ipk" ;;
+              *) pattern="$dir/${package}-[0-9]*.apk" ;;
+            esac
+            compgen -G "$pattern" >/dev/null || { echo "::error::$package missing in $dir ($pattern)"; exit 1; }
           done
 
       - name: Built xray runs and reports the Makefile version
