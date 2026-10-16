@@ -1,0 +1,151 @@
+name: packages
+
+# Build xray-core and the aether-proxy packages with the official SDKs, gate the Xray version
+# against aether-proxy's golden configs, and (on main only) publish them to channel-stable.
+# Pull requests and dispatches on other branches never see the signing key and never publish.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'xray-core/**'
+      - 'AETHER_PROXY_REF'
+      - 'keys/**'
+      - 'scripts/**'
+      - '.github/workflows/packages.yml'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the aether-proxy commit to package
+        id: ref
+        run: |
+          set -eu
+          ref=$(tr -d ' \n' < AETHER_PROXY_REF)
+          echo "$ref" | grep -qxE '[0-9a-f]{40}' || { echo "::error::AETHER_PROXY_REF must be a full commit hash"; exit 1; }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: leochien0102/aether-proxy
+          ref: ${{ steps.ref.outputs.ref }}
+          path: src/aether-proxy
+
+      - name: Go toolchain satisfies Xray's go.mod
+        run: |
+          set -eu
+          xray=$(sed -n 's/^PKG_VERSION:=//p' xray-core/Makefile)
+          go=$(sed -n 's/^GO_TOOLCHAIN_VERSION:=//p' xray-core/Makefile)
+          need=$(curl -fsSL "https://raw.githubusercontent.com/XTLS/Xray-core/v$xray/go.mod" | sed -n 's/^go //p')
+          echo "Xray $xray needs go $need; Makefile pins go $go"
+          [ "$(printf '%s\n' "$need" "$go" | sort -V | head -1)" = "$need" ] || { echo "::error::GO_TOOLCHAIN_VERSION $go is older than go $need"; exit 1; }
+
+      - name: Golden configs pass `xray run -test` with this Xray version
+        run: |
+          set -eu
+          xray=$(sed -n 's/^PKG_VERSION:=//p' xray-core/Makefile)
+          XRAY_CHECK_VERSIONS="$xray" bash src/aether-proxy/tests/ci/xray.sh
+
+  build:
+    needs: gate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: ['24.10.8', '25.12.5']
+        arch: [aarch64_generic, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The feed is the whole workspace: xray-core/ from this repo, aether-proxy/ and
+      # luci-app-aether-proxy/ from the checkout below. Full history: luci.mk versions the
+      # translation package from the git log of po/.
+      - uses: actions/checkout@v4
+        with:
+          repository: leochien0102/aether-proxy
+          ref: ${{ needs.gate.outputs.ref }}
+          path: src/aether-proxy
+          fetch-depth: 0
+
+      - name: Build packages
+        uses: openwrt/gh-action-sdk@f5813d30eeef3534b58ac7e79c5d8842b6035434 # v11
+        env:
+          ARCH: ${{ matrix.arch }}-${{ matrix.sdk }}
+          FEEDNAME: channel
+          PACKAGES: xray-core aether-proxy luci-app-aether-proxy
+
+      - name: Check that every package was built
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -eu
+          dir="bin/packages/$ARCH/channel"
+          ls -la "$dir"
+          for package in xray-core aether-proxy luci-app-aether-proxy luci-i18n-aether-proxy-zh-cn; do
+            ls "$dir/${package}"_*.ipk "$dir/${package}"-[0-9]*.apk >/dev/null 2>&1 || {
+              echo "::error::$package missing in $dir"; exit 1; }
+          done
+
+      - name: Built xray runs and reports the Makefile version
+        if: matrix.arch == 'x86_64' && matrix.sdk == '24.10.8'
+        run: |
+          set -eu
+          want=$(sed -n 's/^PKG_VERSION:=//p' xray-core/Makefile)
+          tmp=$(mktemp -d)
+          tar -xzf bin/packages/x86_64/channel/xray-core_*.ipk -C "$tmp"
+          tar -xzf "$tmp/data.tar.gz" -C "$tmp"
+          got=$("$tmp/usr/bin/xray" version | head -1)
+          echo "$got"
+          [ "$(echo "$got" | cut -d' ' -f2)" = "$want" ]
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.sdk }}-${{ matrix.arch }}
+          # Keeps <arch>/channel/<file>, the layout tools/channel/build.py reads.
+          path: bin/packages/*/channel/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: channel-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      # Generators run from aether-proxy main (08 "发布仓库"); packages come from the build job.
+      - uses: actions/checkout@v4
+        with:
+          repository: leochien0102/aether-proxy
+          path: src/aether-proxy
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          path: packages
+          merge-multiple: true
+
+      - name: Build usign
+        run: scripts/usign.sh "$RUNNER_TEMP/usign"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          USIGN: ${{ runner.temp }}/usign
+          USIGN_SECRET_KEY: ${{ secrets.USIGN_SECRET_KEY }}
+        run: scripts/publish.sh src/aether-proxy packages

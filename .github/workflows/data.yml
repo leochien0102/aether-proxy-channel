@@ -1,0 +1,39 @@
+name: data
+
+# Daily rule-data release. No packages are built: the published package entries are kept.
+# Nothing is published when the generated data equals what is already released.
+
+on:
+  schedule:
+    - cron: '0 20 * * *' # 04:00 Asia/Shanghai
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: channel-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: leochien0102/aether-proxy
+          path: src/aether-proxy
+
+      - name: Build usign
+        run: scripts/usign.sh "$RUNNER_TEMP/usign"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          USIGN: ${{ runner.temp }}/usign
+          USIGN_SECRET_KEY: ${{ secrets.USIGN_SECRET_KEY }}
+        run: scripts/publish.sh src/aether-proxy
