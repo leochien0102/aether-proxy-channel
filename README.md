@@ -8,6 +8,7 @@
 | 内容 | 作用 |
 |---|---|
 | `xray-core/Makefile` | 从 Xray 上游源码包编译 `xray-core`，固定官方 Go 工具链 |
+| `chinadns-ng/Makefile` | 打包 ChinaDNS-NG 上游发布的静态二进制（按 sha256 固定），供固件里没有它的用户**手工安装**；设备不会检查、安装或更新它 |
 | `AETHER_PROXY_REF` | 要打包的 aether-proxy 提交（完整哈希） |
 | `keys/` | 通道公钥（文件名为 usign 指纹），发布前验签 |
 | `scripts/publish.sh` | 生成数据与清单、签名、上传（已有资产不覆盖）、清理旧资产 |
@@ -20,4 +21,5 @@
 ## 许可证
 
 本仓库的脚本与工作流以 **GPL-3.0-or-later** 发布（见 `LICENSE`），与 aether-proxy 相同。
-`xray-core/Makefile` 打包的 Xray 本身是 MPL-2.0（包元数据中的 `PKG_LICENSE`）；发布的规则数据各自的来源与许可证见 aether-proxy 仓库 `aether-proxy/files/data/SOURCES.md`，数据随包安装。
+`xray-core/Makefile` 打包的 Xray 本身是 MPL-2.0（包元数据中的 `PKG_LICENSE`）；
+`chinadns-ng/Makefile` 打包的 ChinaDNS-NG 是 AGPL-3.0-only，二进制未经修改，对应源码见上游同版本的 tag（[zfl9/chinadns-ng](https://github.com/zfl9/chinadns-ng)）；发布的规则数据各自的来源与许可证见 aether-proxy 仓库 `aether-proxy/files/data/SOURCES.md`，数据随包安装。
