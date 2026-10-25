@@ -37,8 +37,9 @@ if gh release view "$tag" >/dev/null 2>&1; then
 		previous=(--previous "$work/prev/manifest.json")
 	fi
 else
+	# Only used when the release is first created; edit later notes on GitHub (gh release edit).
 	gh release create "$tag" --title "aether-proxy channel (stable)" --latest=false \
-		--notes "Signed update channel for aether-proxy. Devices read manifest.json; see the aether-proxy docs."
+		--notes $'**这是设备用的更新通道，不是给人下载的发布页。**\n\n设备从这里读取签名清单 `manifest.json`，验签后按清单下载文件。每个包只保留当前版和上一版，规则数据每天更新，所以文件列表里新旧混在一起。\n\n要手工下载某个版本，请到 aether-proxy 的 [Releases](https://github.com/leochien0102/aether-proxy/releases)，每个版本一页、附更新说明。'
 fi
 if [ "${#previous[@]}" -eq 0 ] && [ -z "$packages" ]; then
 	echo "error: no published manifest yet; the first release must include packages" >&2
