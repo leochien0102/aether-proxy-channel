@@ -15,7 +15,7 @@
 | `.github/workflows/packages.yml` | Xray 版本闸门（`tests/ci/xray.sh`，上游 `xray run -test`）→ SDK 编译 `aether-xray` 等包 → 发布（仅 `main`） |
 | `.github/workflows/data.yml` | 每天发布规则数据（不编译包，没有变化就不发布） |
 
-当前应用打包版本为 **aether-proxy 0.6.1-r1**（`AETHER_PROXY_REF` 固定为 `5905534156e9df4c39347670e9c1cc82116c5f45`）；后端、LuCI 与中文翻译包一起构建，运行时使用独立的 `aether-xray` 包。
+当前应用打包版本为 **aether-proxy 0.6.2-r1**（`AETHER_PROXY_REF` 固定为 `5905534156e9df4c39347670e9c1cc82116c5f45`）；后端、LuCI 与中文翻译包一起构建，运行时使用独立的 `aether-xray` 包。
 
 全量固件使用 aether-proxy 应用仓库中的 `aether-xray` 和 `chinadns-ng` 包；应用显式依赖这两个独立包。channel 只负责包的构建、签名与发布，不再维护它们的源码副本。gate 和 build 均在 checkout 固定应用提交后，将 `src/aether-proxy/aether-xray` 和 `src/aether-proxy/chinadns-ng` 同时复制到 feed 根的对应目录，再读取 Makefile 或构建。`chinadns-ng` 保持 2025.08.09、安装 `/usr/bin/chinadns-ng`，版本 bump 也只在应用仓库进行；它仍不自动更新。
 
