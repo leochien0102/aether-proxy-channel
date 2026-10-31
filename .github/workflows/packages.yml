@@ -9,7 +9,6 @@ on:
     branches:
       - main
     paths:
-      - 'chinadns-ng/**'
       - 'AETHER_PROXY_REF'
       - 'keys/**'
       - 'scripts/**'
@@ -42,10 +41,11 @@ jobs:
           ref: ${{ steps.ref.outputs.ref }}
           path: src/aether-proxy
 
-      - name: Copy aether-xray from the pinned application source
+      - name: Copy binary packages from the pinned application source
         run: |
           set -eu
           cp -a src/aether-proxy/aether-xray ./aether-xray
+          cp -a src/aether-proxy/chinadns-ng ./chinadns-ng
 
       - name: Go toolchain satisfies Xray's go.mod
         run: |
@@ -73,8 +73,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The feed is the whole workspace: aether-xray/ is copied from the pinned
-      # application checkout below, which also provides aether-proxy/ and
+      # The feed is the whole workspace: aether-xray/ and chinadns-ng/ are copied
+      # from the pinned application checkout below, which also provides aether-proxy/ and
       # luci-app-aether-proxy/. Full history: luci.mk versions the translation
       # package from the git log of po/.
       - uses: actions/checkout@v4
@@ -84,10 +84,11 @@ jobs:
           path: src/aether-proxy
           fetch-depth: 0
 
-      - name: Copy aether-xray from the pinned application source
+      - name: Copy binary packages from the pinned application source
         run: |
           set -eu
           cp -a src/aether-proxy/aether-xray ./aether-xray
+          cp -a src/aether-proxy/chinadns-ng ./chinadns-ng
 
       - name: Build packages
         uses: openwrt/gh-action-sdk@f5813d30eeef3534b58ac7e79c5d8842b6035434 # v11
