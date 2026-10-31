@@ -1,6 +1,6 @@
 name: packages
 
-# Build xray-core, chinadns-ng (manual-install only) and the aether-proxy packages with the official SDKs, gate the Xray version
+# Build aether-xray, chinadns-ng (manual-install only) and the aether-proxy packages with the official SDKs, gate the Xray version
 # against aether-proxy's golden configs, and (on main only) publish them to channel-stable.
 # Pull requests and dispatches on other branches never see the signing key and never publish.
 
@@ -9,7 +9,7 @@ on:
     branches:
       - main
     paths:
-      - 'xray-core/**'
+      - 'aether-xray/**'
       - 'chinadns-ng/**'
       - 'AETHER_PROXY_REF'
       - 'keys/**'
@@ -46,8 +46,8 @@ jobs:
       - name: Go toolchain satisfies Xray's go.mod
         run: |
           set -eu
-          xray=$(sed -n 's/^PKG_VERSION:=//p' xray-core/Makefile)
-          go=$(sed -n 's/^GO_TOOLCHAIN_VERSION:=//p' xray-core/Makefile)
+          xray=$(sed -n 's/^PKG_VERSION:=//p' aether-xray/Makefile)
+          go=$(sed -n 's/^GO_TOOLCHAIN_VERSION:=//p' aether-xray/Makefile)
           need=$(curl -fsSL "https://raw.githubusercontent.com/XTLS/Xray-core/v$xray/go.mod" | sed -n 's/^go //p')
           echo "Xray $xray needs go $need; Makefile pins go $go"
           [ "$(printf '%s\n' "$need" "$go" | sort -V | head -1)" = "$need" ] || { echo "::error::GO_TOOLCHAIN_VERSION $go is older than go $need"; exit 1; }
@@ -55,7 +55,7 @@ jobs:
       - name: Golden configs pass `xray run -test` with this Xray version
         run: |
           set -eu
-          xray=$(sed -n 's/^PKG_VERSION:=//p' xray-core/Makefile)
+          xray=$(sed -n 's/^PKG_VERSION:=//p' aether-xray/Makefile)
           XRAY_CHECK_VERSIONS="$xray" bash src/aether-proxy/tests/ci/xray.sh
 
   build:
@@ -69,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The feed is the whole workspace: xray-core/ from this repo, aether-proxy/ and
+      # The feed is the whole workspace: aether-xray/ from this repo, aether-proxy/ and
       # luci-app-aether-proxy/ from the checkout below. Full history: luci.mk versions the
       # translation package from the git log of po/.
       - uses: actions/checkout@v4
@@ -84,7 +84,7 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}-${{ matrix.sdk }}
           FEEDNAME: channel
-          PACKAGES: xray-core chinadns-ng aether-proxy luci-app-aether-proxy
+          PACKAGES: aether-xray chinadns-ng aether-proxy luci-app-aether-proxy
 
       - name: Check that every package was built
         env:
@@ -95,7 +95,7 @@ jobs:
           dir="bin/packages/$ARCH/channel"
           ls -la "$dir"
           # 24.10 SDKs produce ipk, 25.12 SDKs apk; check the one this SDK makes.
-          for package in xray-core chinadns-ng aether-proxy luci-app-aether-proxy luci-i18n-aether-proxy-zh-cn; do
+          for package in aether-xray chinadns-ng aether-proxy luci-app-aether-proxy luci-i18n-aether-proxy-zh-cn; do
             case "$SDK" in
               24.*) pattern="$dir/${package}_*.ipk" ;;
               *) pattern="$dir/${package}-[0-9]*.apk" ;;
@@ -103,15 +103,15 @@ jobs:
             compgen -G "$pattern" >/dev/null || { echo "::error::$package missing in $dir ($pattern)"; exit 1; }
           done
 
-      - name: Built xray runs and reports the Makefile version
+      - name: Built aether-xray runs and reports the Makefile version
         if: matrix.arch == 'x86_64' && matrix.sdk == '24.10.8'
         run: |
           set -eu
-          want=$(sed -n 's/^PKG_VERSION:=//p' xray-core/Makefile)
+          want=$(sed -n 's/^PKG_VERSION:=//p' aether-xray/Makefile)
           tmp=$(mktemp -d)
-          tar -xzf bin/packages/x86_64/channel/xray-core_*.ipk -C "$tmp"
+          tar -xzf bin/packages/x86_64/channel/aether-xray_*.ipk -C "$tmp"
           tar -xzf "$tmp/data.tar.gz" -C "$tmp"
-          got=$("$tmp/usr/bin/xray" version | head -1)
+          got=$("$tmp/usr/bin/aether-xray" version | head -1)
           echo "$got"
           [ "$(echo "$got" | cut -d' ' -f2)" = "$want" ]
 
