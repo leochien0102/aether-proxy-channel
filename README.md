@@ -16,6 +16,9 @@
 | `.github/workflows/data.yml` | 每天发布规则数据（不编译包，没有变化就不发布） |
 | `.github/workflows/xray-bump.yml` | 上游有新版本时在 `bump/aether-xray-*` 开 PR，只改 `aether-xray/Makefile`；合并后才发布 |
 
+当前应用打包版本为 **aether-proxy 0.6.0-r1**（`AETHER_PROXY_REF` 固定为 `d9c48bf29c214eb41263a9a26f13b30fe78eaa25`），从此前的 **0.5.0-r1** 升级；后端、LuCI 与中文翻译包一起构建，运行时使用独立的 `aether-xray` 包。
+SDK 构建列表为 `aether-xray chinadns-ng aether-proxy luci-app-aether-proxy`，产物检查另包含 `luci-i18n-aether-proxy-zh-cn`；不再要求构建或产出 `xray-core`。
+
 `aether-xray` 当前上游基版本为 **26.10.21**（release 为 1），与 feeds/packages 的上游基版本对齐，但不带其补丁。
 产物名为 `aether-xray_*.ipk` / `aether-xray-*.apk`，不会覆盖 feeds/ssr-plus 的 `/usr/bin/xray`，也不自动卸载旧包。
 发布生成器 `tools/channel/build.py`（位于 aether-proxy 仓库）原样保留旧 manifest 的 `xray-core` 条目供旧客户端使用；不重命名或删除旧历史。
