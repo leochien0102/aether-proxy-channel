@@ -1,5 +1,5 @@
 #
-# xray-core for the aether-proxy update channel.
+# aether-xray for the aether-proxy update channel (docs/08-updates.md, B24).
 #
 # Xray needs a newer Go than the golang package in the OpenWrt 24.10 feeds, so this
 # Makefile does not use golang-package.mk: it downloads an official Go toolchain (pinned
@@ -9,13 +9,13 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=xray-core
-PKG_VERSION:=26.9.30
+PKG_NAME:=aether-xray
+PKG_VERSION:=26.10.21
 PKG_RELEASE:=1
 
 PKG_SOURCE:=Xray-core-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/XTLS/Xray-core/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=85162fa61eb6d1adc9199afff7b41299e69dedd094907e9c56ef665c236b3ef0
+PKG_HASH:=44ef4874529a03848c90f1fdcfb763350fbc5f1de741ec90e0024d651df25650
 PKG_BUILD_DIR:=$(BUILD_DIR)/Xray-core-$(PKG_VERSION)
 
 PKG_LICENSE:=MPL-2.0
@@ -42,17 +42,18 @@ $(eval $(call Download,go-toolchain))
 # OpenWrt ARCH -> GOARCH. Only the channel's targets are listed; others fail loudly.
 GO_TARGET_ARCH:=$(if $(filter aarch64,$(ARCH)),arm64,$(if $(filter x86_64,$(ARCH)),amd64,))
 
-define Package/xray-core
+define Package/aether-xray
   SECTION:=net
   CATEGORY:=Network
-  TITLE:=Xray, a platform for building proxies (aether-proxy channel build)
+  TITLE:=aether-xray, unpatched upstream Xray for the aether-proxy channel
   URL:=https://github.com/XTLS/Xray-core
   DEPENDS:=@(aarch64||x86_64) +ca-bundle
 endef
 
-define Package/xray-core/description
-  Xray-core built from the upstream source release by the aether-proxy
-  update channel: a static binary (CGO disabled) installed as /usr/bin/xray.
+define Package/aether-xray/description
+  aether-xray built without patches from the upstream Xray source release by
+  the aether-proxy update channel: a static binary (CGO disabled) installed
+  as /usr/bin/aether-xray, leaving /usr/bin/xray to feeds/ssr-plus.
 endef
 
 GO_TOOLCHAIN_DIR:=$(PKG_BUILD_DIR)/.toolchain
@@ -73,15 +74,15 @@ define Build/Prepare
 endef
 
 define Build/Compile
-	@[ -n "$(GO_TARGET_ARCH)" ] || { echo "xray-core: unsupported ARCH '$(ARCH)'" >&2; exit 1; }
-	@[ "$(HOST_ARCH)" = x86_64 ] || { echo "xray-core: the pinned Go toolchain is linux-amd64" >&2; exit 1; }
+	@[ -n "$(GO_TARGET_ARCH)" ] || { echo "aether-xray: unsupported ARCH '$(ARCH)'" >&2; exit 1; }
+	@[ "$(HOST_ARCH)" = x86_64 ] || { echo "aether-xray: the pinned Go toolchain is linux-amd64" >&2; exit 1; }
 	cd "$(PKG_BUILD_DIR)" && env $(GO_BUILD_ENV) "$(GO_TOOLCHAIN_DIR)/go/bin/go" build \
-		-ldflags "-s -w -buildid=" -o "$(PKG_BUILD_DIR)/xray" ./main
+		-ldflags "-s -w -buildid=" -o "$(PKG_BUILD_DIR)/aether-xray" ./main
 endef
 
-define Package/xray-core/install
+define Package/aether-xray/install
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/xray $(1)/usr/bin/xray
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/aether-xray $(1)/usr/bin/aether-xray
 endef
 
-$(eval $(call BuildPackage,xray-core))
+$(eval $(call BuildPackage,aether-xray))
