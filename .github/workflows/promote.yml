@@ -32,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import hashlib, json, os, re, subprocess
+          import hashlib, json, os, re, shutil, subprocess, sys
           from pathlib import Path
           repo, tag = os.environ['APP_REPO'], os.environ['RC_TAG']
           if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-r[0-9]+)?-rc[1-9][0-9]*', tag):
@@ -71,6 +71,12 @@ jobs:
                            for key in ['PKG_VERSION', 'PKG_RELEASE'])
           names = ['aether-proxy', 'luci-app-aether-proxy', 'luci-i18n-aether-proxy-zh-cn', 'aether-xray', 'chinadns-ng']
           versions = {name: fields(name) for name in names if name != names[2]}
+          # The canonical-version rule comes from the same RC commit as the builder, so
+          # preflight, the entry checks and any compatibility chain share one definition.
+          fetch('tools/channel/build.py')
+          fetch('tools/data/build.py')
+          sys.path.insert(0, 'publisher/tools')
+          from channel.build import canonical_version
           version, revision = versions['aether-proxy']
           target = f'v{version}-r{revision}'
           if (manifest['version'] != version or manifest['target_tag'] != target
@@ -87,7 +93,18 @@ jobs:
           if any(len({e['version'] for e in entries if e['package'] == n}) != 1 for n in names):
               raise SystemExit('Inconsistent package versions across matrix')
           files = {e['asset'] for e in entries} | {'rc-manifest.json', 'SHA256SUMS'}
-          if len(files) != 22 or {p.name for p in root.iterdir()} != files or {a['name'] for a in release['assets']} != files:
+          # An RC that carries the reviewed bridge chain has one extra asset, bound in rc-manifest.
+          compat_name = manifest.get('compatibility')
+          if compat_name is not None and (not isinstance(compat_name, str)
+                  or not re.fullmatch(r'[A-Za-z0-9._-]+', compat_name)
+                  or compat_name in {e['asset'] for e in entries}):
+              raise SystemExit('Invalid compatibility asset binding')
+          if compat_name is not None:
+              files.add(compat_name)
+          expected = 23 if compat_name is not None else 22
+          if (len(files) != expected
+                  or {p.name for p in root.iterdir()} != files
+                  or {a['name'] for a in release['assets']} != files):
               raise SystemExit('Prerelease asset set mismatch')
           sums = {}
           for line in (root / 'SHA256SUMS').read_text().splitlines():
@@ -109,9 +126,13 @@ jobs:
               if filename != want_name or e['asset'] != a + '--' + re.sub(r'[^A-Za-z0-9._-]', '.', filename):
                   raise SystemExit('Package name/architecture mismatch')
               if n != names[2]:
+                  # Same canonical rule as the RC workflow: the filename version is the
+                  # version, rendered as -<release> or -r<release> by the build system.
                   base, rev = versions[n]
-                  if v != base + '-r' + rev:
-                      raise SystemExit('Package version mismatch')
+                  try:
+                      v = canonical_version(base, rev, v)
+                  except ValueError as exc:
+                      raise SystemExit(f'Package version mismatch: {filename}: {exc}')
               elif not re.fullmatch(r'[0-9][A-Za-z0-9.+~_-]*', v):
                   raise SystemExit('Invalid translation version')
               data = (root / e['asset']).read_bytes()
@@ -119,14 +140,69 @@ jobs:
                   raise SystemExit('Manifest hash mismatch')
               dest = Path('packages') / a / 'rc' / filename
               dest.parent.mkdir(parents=True, exist_ok=True); dest.write_bytes(data)
-          fetch('tools/channel/build.py')
-          fetch('tools/data/build.py')
+          # The reviewed bridge chain rides the prerelease (rc-manifest binds the asset). Every
+          # step asset must be the signed aether-proxy bytes: the built target comes from the RC,
+          # historical steps come from the existing stable channel. Anything missing or tampered
+          # fails here, before preflight, signing or any release operation. No app checkout, no
+          # SDK, no compilation: only already-built bytes are moved and verified.
+          if compat_name is not None:
+              try:
+                  value = json.loads((root / compat_name).read_text())
+              except json.JSONDecodeError as exc:
+                  raise SystemExit(f'compatibility asset is not valid JSON: {exc}')
+              chain = value.get('aether-proxy') if isinstance(value, dict) else None
+              steps = chain.get('steps') if isinstance(chain, dict) else None
+              if not isinstance(steps, list) or not steps:
+                  raise SystemExit('Compatibility asset has no bridge steps')
+              # Version correspondence: the chain's terminal step is the RC's built
+              # aether-proxy (canonical version), devices compare it against their exact
+              # installed string; the formal tag (v<version>-r<release>) is a separate
+              # convention already bound via target_tag above.
+              built = next(e['version'] for e in entries if e['package'] == 'aether-proxy')
+              terminal = steps[-1].get('version') if isinstance(steps[-1], dict) else None
+              if terminal != built:
+                  raise SystemExit(f'Compatibility chain terminal step must be the built aether-proxy {built}')
+              bridge = Path('bridge'); bridge.mkdir()
+              shutil.copyfile(root / compat_name, bridge / 'compatibility.json')
+              for step in steps:
+                  version = step.get('version') if isinstance(step, dict) else None
+                  assets = step.get('assets') if isinstance(step, dict) else None
+                  formats = assets.get('all') if isinstance(assets, dict) else None
+                  if not isinstance(formats, dict) or set(formats) != {'ipk', 'apk'}:
+                      raise SystemExit(f'Bridge step {version}: aether-proxy is noarch and needs ipk and apk assets')
+                  for kind, asset in formats.items():
+                      url = asset.get('url') if isinstance(asset, dict) else None
+                      if (not isinstance(url, str) or not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*\.' + kind, url)
+                              or not isinstance(asset.get('sha256'), str)
+                              or not re.fullmatch(r'[0-9a-f]{64}', asset['sha256'])
+                              or type(asset.get('size')) is not int or asset['size'] <= 0):
+                          raise SystemExit(f'Bridge step {version}: invalid {kind} asset metadata')
+                      dest = bridge / url
+                      source = next((e for e in entries if e['package'] == 'aether-proxy' and e['format'] == kind
+                                     and e['arch'] == 'aarch64_generic'
+                                     and re.sub(r'[^A-Za-z0-9._-]', '.', e['filename']) == url), None)
+                      if source is not None:
+                          shutil.copyfile(root / source['asset'], dest)
+                      elif not dest.is_file():
+                          downloaded = subprocess.run(['gh', 'release', 'download', 'channel-stable',
+                                                       '-p', url, '-D', str(bridge)], capture_output=True)
+                          if downloaded.returncode != 0 or not dest.is_file():
+                              raise SystemExit(f'Bridge asset {url} is neither in the RC prerelease '
+                                               f'nor in the stable channel: {downloaded.stderr.decode(errors="replace").strip()}')
+                      data = dest.read_bytes()
+                      if len(data) != asset['size'] or hashlib.sha256(data).hexdigest() != asset['sha256']:
+                          raise SystemExit(f'Bridge asset hash/size mismatch: {url}')
+              with open(os.environ['GITHUB_ENV'], 'a') as env:
+                  env.write(f'COMPATIBILITY_FILE={bridge.resolve() / "compatibility.json"}\n')
           PY
       - name: Reject existing assets with different bytes
         shell: bash
         run: |
           set -euo pipefail
-          python3 publisher/tools/channel/build.py --packages packages --out preflight
+          # Same compatibility input as the final publish; bridge bytes sit beside the file.
+          args=(--packages packages)
+          [ -z "${COMPATIBILITY_FILE:-}" ] || args+=(--compatibility "$COMPATIBILITY_FILE")
+          python3 publisher/tools/channel/build.py "${args[@]}" --out preflight
           # API errors fail closed, rather than being mistaken for an empty stable release.
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > channel-releases.json
           python3 - <<'PY'
