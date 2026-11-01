@@ -1,0 +1,159 @@
+name: Promote RC
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc_tag:
+        description: 'Existing app prerelease tag (vVERSION[-rN]-rcN)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    concurrency:
+      group: channel-publish
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APP_REPO: leochien0102/aether-proxy
+      RC_TAG: ${{ inputs.rc_tag }}
+    steps:
+      - uses: actions/checkout@v4 # channel only; never checkout app source
+      - name: Download and validate immutable prerelease
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, re, subprocess
+          from pathlib import Path
+          repo, tag = os.environ['APP_REPO'], os.environ['RC_TAG']
+          if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-r[0-9]+)?-rc[1-9][0-9]*', tag):
+              raise SystemExit('Invalid RC tag')
+          def api(endpoint):
+              return json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/{endpoint}']))
+          def resolve(tag):
+              obj = api('git/ref/tags/' + tag)['object']
+              for _ in range(10):
+                  if obj['type'] == 'commit':
+                      return obj['sha']
+                  if obj['type'] != 'tag':
+                      break
+                  obj = api('git/tags/' + obj['sha'])['object']
+              raise SystemExit('Tag does not resolve to commit')
+          release = api('releases/tags/' + tag)
+          if release['tag_name'] != tag or release['draft'] or not release['prerelease']:
+              raise SystemExit('Only published prerelease assets are accepted')
+          commit = resolve(tag)
+          subprocess.run(['gh', 'release', 'download', tag, '--repo', repo, '--dir', 'download'], check=True)
+          root = Path('download')
+          manifest = json.loads((root / 'rc-manifest.json').read_text())
+          if manifest['schema'] != 1 or manifest['rc_tag'] != tag or manifest['commit'] != commit:
+              raise SystemExit('RC tag/commit binding mismatch')
+          # Fetch only the two standalone publication tools and version metadata at the RC commit.
+          # No app checkout, SDK, package build, or host compiler is involved.
+          def fetch(path):
+              data = subprocess.check_output(['gh', 'api', '-H', 'Accept: application/vnd.github.raw+json',
+                                             f'repos/{repo}/contents/{path}?ref={commit}'])
+              dest = Path('publisher') / path
+              dest.parent.mkdir(parents=True, exist_ok=True); dest.write_bytes(data)
+              return data.decode()
+          def fields(name):
+              text = fetch(name + '/Makefile')
+              return tuple(re.search(r'^' + key + r':=(\S+)$', text, re.M)[1]
+                           for key in ['PKG_VERSION', 'PKG_RELEASE'])
+          names = ['aether-proxy', 'luci-app-aether-proxy', 'luci-i18n-aether-proxy-zh-cn', 'aether-xray', 'chinadns-ng']
+          versions = {name: fields(name) for name in names if name != names[2]}
+          version, revision = versions['aether-proxy']
+          target = f'v{version}-r{revision}'
+          if (manifest['version'] != version or manifest['target_tag'] != target
+                  or not re.fullmatch(r'v' + re.escape(version) + r'(?:-r' + re.escape(revision) + r')?-rc[1-9][0-9]*', tag)):
+              raise SystemExit('RC target version mismatch')
+          # If the formal tag already exists, it must bind to this exact commit.
+          refs = api('git/matching-refs/tags/' + target)
+          if any(r['ref'] == 'refs/tags/' + target for r in refs) and resolve(target) != commit:
+              raise SystemExit('Formal tag/RC commit mismatch')
+          entries = manifest['assets']
+          expected = {(n, a, f) for n in names for a in ['aarch64_generic', 'x86_64'] for f in ['ipk', 'apk']}
+          if len(entries) != 20 or {(e['package'], e['arch'], e['format']) for e in entries} != expected:
+              raise SystemExit('Incomplete/duplicate RC package matrix')
+          if any(len({e['version'] for e in entries if e['package'] == n}) != 1 for n in names):
+              raise SystemExit('Inconsistent package versions across matrix')
+          files = {e['asset'] for e in entries} | {'rc-manifest.json', 'SHA256SUMS'}
+          if len(files) != 22 or {p.name for p in root.iterdir()} != files or {a['name'] for a in release['assets']} != files:
+              raise SystemExit('Prerelease asset set mismatch')
+          sums = {}
+          for line in (root / 'SHA256SUMS').read_text().splitlines():
+              match = re.fullmatch(r'([0-9a-f]{64})  ([A-Za-z0-9._-]+)', line)
+              if not match or match[2] in sums:
+                  raise SystemExit('Invalid checksum list')
+              sums[match[2]] = match[1]
+          if set(sums) != files - {'SHA256SUMS'}:
+              raise SystemExit('Incomplete checksum list')
+          for filename, digest in sums.items():
+              if hashlib.sha256((root / filename).read_bytes()).hexdigest() != digest:
+                  raise SystemExit('RC hash mismatch: ' + filename)
+          for e in entries:
+              n, a, f, filename, v = (e[k] for k in ['package', 'arch', 'format', 'filename', 'version'])
+              if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.+~_-]*\.' + f, filename) or '..' in filename:
+                  raise SystemExit('Unsafe package filename')
+              pkg_arch = 'all' if n in names[:3] else a
+              want_name = f'{n}_{v}_{pkg_arch}.ipk' if f == 'ipk' else f'{n}-{v}.apk'
+              if filename != want_name or e['asset'] != a + '--' + re.sub(r'[^A-Za-z0-9._-]', '.', filename):
+                  raise SystemExit('Package name/architecture mismatch')
+              if n != names[2]:
+                  base, rev = versions[n]
+                  if v != base + '-r' + rev:
+                      raise SystemExit('Package version mismatch')
+              elif not re.fullmatch(r'[0-9][A-Za-z0-9.+~_-]*', v):
+                  raise SystemExit('Invalid translation version')
+              data = (root / e['asset']).read_bytes()
+              if hashlib.sha256(data).hexdigest() != e['sha256']:
+                  raise SystemExit('Manifest hash mismatch')
+              dest = Path('packages') / a / 'rc' / filename
+              dest.parent.mkdir(parents=True, exist_ok=True); dest.write_bytes(data)
+          fetch('tools/channel/build.py')
+          fetch('tools/data/build.py')
+          PY
+      - name: Reject existing assets with different bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 publisher/tools/channel/build.py --packages packages --out preflight
+          # API errors fail closed, rather than being mistaken for an empty stable release.
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > channel-releases.json
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          releases = [r for page in json.load(open('channel-releases.json')) for r in page]
+          stable = [r for r in releases if r['tag_name'] == 'channel-stable']
+          if stable:
+              subprocess.run(['gh', 'release', 'download', 'channel-stable', '--dir', 'existing'], check=True)
+              old = Path('existing')
+              manifest = json.load(open('preflight/manifest.json'))
+              previous = json.load(open(old / 'manifest.json'))
+              for name, entry in manifest['packages'].items():
+                  current = previous['packages'].get(name, {}).get('current')
+                  if current and current['version'] == entry['current']['version'] and current['assets'] != entry['current']['assets']:
+                      raise SystemExit('Same version has different assets: ' + name)
+              for path in Path('preflight').iterdir():
+                  if path.suffix in ('.ipk', '.apk') and (old / path.name).exists():
+                      if path.read_bytes() != (old / path.name).read_bytes():
+                          raise SystemExit('Existing asset has different bytes: ' + path.name)
+          PY
+      - name: Install signing verifier (no compilation)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y usign
+      - name: Sign and publish verified packages
+        env:
+          USIGN: /usr/bin/usign
+          USIGN_SECRET_KEY: ${{ secrets.USIGN_SECRET_KEY }}
+        run: scripts/publish.sh publisher packages

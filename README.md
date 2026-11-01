@@ -27,6 +27,25 @@ SDK 构建列表为 `aether-xray chinadns-ng aether-proxy luci-app-aether-proxy`
 
 签名私钥只在 Actions Secret `USIGN_SECRET_KEY` 中，PR 与非 `main` 分支的运行拿不到，也不发布。
 
+## RC 原样晋升（T11.12）
+
+在 **main** 手动运行 `.github/workflows/promote.yml`，输入 app 已验收的 `rc_tag`（如 `v0.6.3-rc1`）。这是新增路径；原 `packages.yml` / `data.yml` 行为保留，不要为晋升再次触发 SDK 构建。
+
+- 只接受公开 prerelease；下载 20 个 RC 包、`rc-manifest.json` 和 `SHA256SUMS`，检查完整矩阵、版本、tag commit 和两层 hash。
+- 不 checkout app 源码，不调用 SDK 或编译器。只按 RC commit 下载两个独立发布工具和 Makefile 版本元数据；以系统包安装 usign。
+- `tools/channel/build.py --packages packages` 先预检，再由现有 `scripts/publish.sh publisher packages` 生成数据、签名和发布 `channel-stable`。与其他发布共用 `channel-publish` 并发锁。
+- 已有同名包不同字节、同版本清单不同均失败，不用覆盖或静默保留旧字节来冒充晋升成功。noarch 按现有生成器选 `aarch64_generic` 路径的原始字节；正式包通常 14 个文件，均来自已校验的 RC。
+- `USIGN_SECRET_KEY` 只在最后一个发布步骤取自 Actions Secret。PR、非 main dispatch 不发布。
+- 正式 tag 必须使用 RC 清单记录的 `target_tag` 和同一 app commit；若正式 tag 已存在，promote 检查其 commit。若尚不存在，后续创建和保护 tag 是维护者责任；按本卡约束未改 app `release-assets.yml`，它仍只从 channel manifest 复制包，不能自动检查未来 tag 的 RC commit。
+
+离线测试在 app 仓库：
+
+```sh
+CHANNEL_ROOT=/path/to/aether-proxy-channel python3 tests/release/test_rc_promotion.py
+```
+
+执行该命令的当前目录是 app checkout。fake gh / artifact / signer 不访问网络、不发布；测试真实 workflow 脚本及现有 publish/channel 生成器。详见 `reports/T11.12.md`。本卡不修改版本或 `AETHER_PROXY_REF`，不创建真实 tag、不 push、不发布。
+
 ## 许可证
 
 本仓库的脚本与工作流以 **GPL-3.0-or-later** 发布（见 `LICENSE`），与 aether-proxy 相同。
