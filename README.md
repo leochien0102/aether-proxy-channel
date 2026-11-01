@@ -70,9 +70,8 @@ data 与全部 compatibility steps；不再被任何部分引用的资产才会�
 
 本次不修改 `AETHER_PROXY_REF`、版本、keys 或 RC 资产契约。当前固定的旧应用 ref
 不因此自动获得 T11.14 builder；使用 compatibility 必须明确选择包含 T11.14 的发布工具。
-`promote.yml` 仍只接受现有 RC 资产，没有 compatibility 文件输入或来源；它不会猜测、
-伪造或自动生成 bridge 链。未来接入 RC/维护者提供的文件时，须明确来源、校验资产，
-并在预检与最终发布中使用同一份输入，不能只设置一个指向不存在文件的 workflow 参数。
+上传、上传后存在性检查、stale 删除共用同一份 URL 集合：packages current/previous、
+data 与全部 compatibility steps；不再被任何部分引用的资产才会清理。
 
 离线验证（在 app checkout 执行）：
 
@@ -80,6 +79,28 @@ data 与全部 compatibility steps；不再被任何部分引用的资产才会�
 CHANNEL_ROOT=/path/to/aether-proxy-channel python3 -m unittest tools.channel.test_build
 CHANNEL_ROOT=/path/to/aether-proxy-channel python3 tests/release/test_rc_promotion.py
 ```
+
+## Bridge 发布链路（T11.16）
+
+`promote.yml` 现在会自动携带 bridge 链，前提是 app 的 RC 带了受审文件：
+
+- app 的 `release-candidate.yml` 在 tagged commit 里发现 `bridges/compatibility.json`
+  时，把它原样放进 prerelease（资产 22→23）并在 `rc-manifest.json` 写入
+  `"compatibility": "<资产名>"` 绑定；终点步不是本 RC 构建版本的 aether-proxy 时 RC 失败。
+  没有该文件时 RC 与 promote 行为完全不变，也不声称支持 bridge。
+- `promote.yml` 按 rc-manifest 的绑定下载 compatibility 文件，按文件里的 url 逐个取
+  历史字节：目标步的资产必须就是本 RC 构建的 aether-proxy 包（noarch 取
+  aarch64_generic 字节），历史步从既有 `channel-stable` 按名下载；每步必须 ipk+apk
+  齐备，逐一校验 sha256/size。缺任一资产、hash/size 不符、非法 JSON 都在这一步
+  立即失败，先于 preflight、签名与任何 release 操作。
+- 校验通过后把字节与文件放在 `bridge/`（`COMPATIBILITY_FILE` 指向其中的
+  compatibility.json，经 `GITHUB_ENV` 传给后续步骤），preflight 与
+  `scripts/publish.sh` 用同一份输入；生成器从 JSON 同目录取新 bridge 字节。
+  仍然不 checkout app 源码、不调用 SDK 或编译器。
+
+当前 app 仓库登记的链（0.6.2-1 → 0.6.3-1 单步）只含已发布 ipk 的真实字节，apk
+资产须在真正打 RC tag 前由维护者以 25.12 SDK 产物补齐；补齐前 promote 的双格式
+检查会拒绝该链，不会被晋升。`COMPATIBILITY_FILE` 手工发布路径（上一节）不变。
 
 ## 许可证
 
