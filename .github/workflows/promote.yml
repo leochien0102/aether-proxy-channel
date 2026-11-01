@@ -32,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import hashlib, json, os, re, shutil, subprocess
+          import hashlib, json, os, re, shutil, subprocess, sys
           from pathlib import Path
           repo, tag = os.environ['APP_REPO'], os.environ['RC_TAG']
           if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-r[0-9]+)?-rc[1-9][0-9]*', tag):
@@ -71,6 +71,12 @@ jobs:
                            for key in ['PKG_VERSION', 'PKG_RELEASE'])
           names = ['aether-proxy', 'luci-app-aether-proxy', 'luci-i18n-aether-proxy-zh-cn', 'aether-xray', 'chinadns-ng']
           versions = {name: fields(name) for name in names if name != names[2]}
+          # The canonical-version rule comes from the same RC commit as the builder, so
+          # preflight, the entry checks and any compatibility chain share one definition.
+          fetch('tools/channel/build.py')
+          fetch('tools/data/build.py')
+          sys.path.insert(0, 'publisher/tools')
+          from channel.build import canonical_version
           version, revision = versions['aether-proxy']
           target = f'v{version}-r{revision}'
           if (manifest['version'] != version or manifest['target_tag'] != target
@@ -120,9 +126,13 @@ jobs:
               if filename != want_name or e['asset'] != a + '--' + re.sub(r'[^A-Za-z0-9._-]', '.', filename):
                   raise SystemExit('Package name/architecture mismatch')
               if n != names[2]:
+                  # Same canonical rule as the RC workflow: the filename version is the
+                  # version, rendered as -<release> or -r<release> by the build system.
                   base, rev = versions[n]
-                  if v != base + '-r' + rev:
-                      raise SystemExit('Package version mismatch')
+                  try:
+                      v = canonical_version(base, rev, v)
+                  except ValueError as exc:
+                      raise SystemExit(f'Package version mismatch: {filename}: {exc}')
               elif not re.fullmatch(r'[0-9][A-Za-z0-9.+~_-]*', v):
                   raise SystemExit('Invalid translation version')
               data = (root / e['asset']).read_bytes()
@@ -130,8 +140,6 @@ jobs:
                   raise SystemExit('Manifest hash mismatch')
               dest = Path('packages') / a / 'rc' / filename
               dest.parent.mkdir(parents=True, exist_ok=True); dest.write_bytes(data)
-          fetch('tools/channel/build.py')
-          fetch('tools/data/build.py')
           # The reviewed bridge chain rides the prerelease (rc-manifest binds the asset). Every
           # step asset must be the signed aether-proxy bytes: the built target comes from the RC,
           # historical steps come from the existing stable channel. Anything missing or tampered
@@ -146,6 +154,14 @@ jobs:
               steps = chain.get('steps') if isinstance(chain, dict) else None
               if not isinstance(steps, list) or not steps:
                   raise SystemExit('Compatibility asset has no bridge steps')
+              # Version correspondence: the chain's terminal step is the RC's built
+              # aether-proxy (canonical version), devices compare it against their exact
+              # installed string; the formal tag (v<version>-r<release>) is a separate
+              # convention already bound via target_tag above.
+              built = next(e['version'] for e in entries if e['package'] == 'aether-proxy')
+              terminal = steps[-1].get('version') if isinstance(steps[-1], dict) else None
+              if terminal != built:
+                  raise SystemExit(f'Compatibility chain terminal step must be the built aether-proxy {built}')
               bridge = Path('bridge'); bridge.mkdir()
               shutil.copyfile(root / compat_name, bridge / 'compatibility.json')
               for step in steps:

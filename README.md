@@ -82,25 +82,34 @@ CHANNEL_ROOT=/path/to/aether-proxy-channel python3 tests/release/test_rc_promoti
 
 ## Bridge 发布链路（T11.16）
 
+**版本规范（返工后）**：包的 canonical version 就是包文件名里的版本串（同一包
+ipk/apk 必须一致），manifest、compatibility 步骤与设备比较全部使用它。RC 与
+promote 共用 RC commit 里 `tools/channel/build.py` 的 `canonical_version()`：接受
+真实发布的两种渲染（标准包 `-<release>` 如 `0.6.3-1`、`luci.mk` 包 `-r<release>`
+如 `0.6.3-r1`），不匹配 Makefile 即失败；正式 tag（`v<version>-r<release>`）是
+单独的 tag 规范，经 rc-manifest 的 `target_tag` 绑定。
+
 `promote.yml` 现在会自动携带 bridge 链，前提是 app 的 RC 带了受审文件：
 
 - app 的 `release-candidate.yml` 在 tagged commit 里发现 `bridges/compatibility.json`
   时，把它原样放进 prerelease（资产 22→23）并在 `rc-manifest.json` 写入
-  `"compatibility": "<资产名>"` 绑定；终点步不是本 RC 构建版本的 aether-proxy 时 RC 失败。
-  没有该文件时 RC 与 promote 行为完全不变，也不声称支持 bridge。
-- `promote.yml` 按 rc-manifest 的绑定下载 compatibility 文件，按文件里的 url 逐个取
-  历史字节：目标步的资产必须就是本 RC 构建的 aether-proxy 包（noarch 取
-  aarch64_generic 字节），历史步从既有 `channel-stable` 按名下载；每步必须 ipk+apk
-  齐备，逐一校验 sha256/size。缺任一资产、hash/size 不符、非法 JSON 都在这一步
-  立即失败，先于 preflight、签名与任何 release 操作。
+  `"compatibility": "<资产名>"` 绑定；终点步不是本 RC 构建版本的 aether-proxy 时
+  RC 失败。没有该文件时 RC 与 promote 行为完全不变，也不声称支持 bridge。
+- `promote.yml` 按 rc-manifest 的绑定下载 compatibility 文件，先检查终点步必须
+  等于本 RC 构建的 aether-proxy 版本（fail-fast），再按文件里的 url 逐个取历史
+  字节：目标步的资产必须就是本 RC 构建的 aether-proxy 包（noarch 取
+  aarch64_generic 字节），历史步从既有 `channel-stable` 按名下载；每步必须
+  ipk+apk 齐备，逐一校验 sha256/size。缺任一资产、hash/size 不符、非法 JSON
+  都在这一步立即失败，先于 preflight、签名与任何 release 操作。
 - 校验通过后把字节与文件放在 `bridge/`（`COMPATIBILITY_FILE` 指向其中的
   compatibility.json，经 `GITHUB_ENV` 传给后续步骤），preflight 与
   `scripts/publish.sh` 用同一份输入；生成器从 JSON 同目录取新 bridge 字节。
   仍然不 checkout app 源码、不调用 SDK 或编译器。
 
-当前 app 仓库登记的链（0.6.2-1 → 0.6.3-1 单步）只含已发布 ipk 的真实字节，apk
-资产须在真正打 RC tag 前由维护者以 25.12 SDK 产物补齐；补齐前 promote 的双格式
-检查会拒绝该链，不会被晋升。`COMPATIBILITY_FILE` 手工发布路径（上一节）不变。
+app 仓库**尚未登记任何链**（`bridges/compatibility.json` 不存在）：首个真实链
+在全部步骤的 ipk+apk 字节可核对后由维护者提交，此前 promote 走无链路径。测试
+里的链是合成 fixture，不代表已发布的链。`COMPATIBILITY_FILE` 手工发布路径
+（上一节）不变。
 
 ## 许可证
 
