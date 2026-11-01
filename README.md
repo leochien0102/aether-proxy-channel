@@ -7,9 +7,7 @@
 
 | 内容 | 作用 |
 |---|---|
-| 应用仓库 `aether-xray/Makefile` | 唯一包源；channel 在 gate/build 中从固定应用提交复制到 feed 根，再从上游 tag 编译无补丁的 `aether-xray`，安装 `/usr/bin/aether-xray` |
-| 应用仓库 `chinadns-ng/Makefile` | 唯一包源；channel 在 gate/build 中从同一固定应用提交复制。打包 ChinaDNS-NG 上游静态二进制（按 sha256 固定），供用户**手工安装/更新**；不在 UPDATE_PACKAGES 中，设备更新通道不会检查、安装或更新它 |
-| `AETHER_PROXY_REF` | 要打包的 aether-proxy 提交（完整哈希，必须包含 `aether-xray/` 和 `chinadns-ng/` 包） |
+| `AETHER_PROXY_REF` | 要打包的 aether-proxy 提交（完整哈希）；包源（含 `aether-xray/`、`chinadns-ng/`）在应用仓库，gate/build 时复制，不在本仓库保存 |
 | `keys/` | 通道公钥（文件名为 usign 指纹），发布前验签 |
 | `scripts/publish.sh` | 生成数据与清单、签名、上传（已有资产不覆盖）、清理旧资产 |
 | `.github/workflows/packages.yml` | Xray 版本闸门（`tests/ci/xray.sh`，上游 `xray run -test`）→ SDK 编译 `aether-xray` 等包 → 发布（仅 `main`） |
