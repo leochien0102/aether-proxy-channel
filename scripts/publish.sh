@@ -5,6 +5,7 @@
 #
 # Without a packages dir this is a data-only release: the package entries of the published
 # manifest are kept. Env: GH_TOKEN, GITHUB_REPOSITORY, USIGN (usign binary), USIGN_SECRET_KEY.
+# Optional COMPATIBILITY_FILE: compatibility object JSON; new bridge assets live beside it.
 #
 # Asset rule: a file already in the release is never replaced. Rebuilt packages with an
 # unchanged version keep their old manifest entry (tools/channel/build.py), so only the old
@@ -18,6 +19,17 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 keys="$root/keys"
 usign=${USIGN:?USIGN must point to the usign binary}
 : "${USIGN_SECRET_KEY:?USIGN_SECRET_KEY is not set}"
+
+# Fail before any release mutation if explicitly supplied input is missing or invalid JSON.
+compatibility=()
+if [ "${COMPATIBILITY_FILE+x}" = x ]; then
+	python3 - "$COMPATIBILITY_FILE" <<'PY'
+import json, sys
+from pathlib import Path
+json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+PY
+	compatibility=(--compatibility "$COMPATIBILITY_FILE")
+fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -48,7 +60,7 @@ fi
 
 # 2. Rule data (generator and sanity checks live in aether-proxy) and the release directory.
 python3 "$src/tools/data/build.py" --out "$work/data" --cache "$work/cache"
-args=(--out "$work/out" --data "$work/data" "${previous[@]}")
+args=(--out "$work/out" --data "$work/data" "${previous[@]}" "${compatibility[@]}")
 [ -z "$packages" ] || args+=(--packages "$packages")
 python3 "$src/tools/channel/build.py" "${args[@]}"
 if [ -e "$work/out/unchanged" ]; then
@@ -75,6 +87,11 @@ for entry in m["packages"].values():
         for formats in ((release or {}).get("assets") or {}).values():
             urls.update(asset["url"] for asset in formats.values())
 urls.update(item["url"] for item in m["data"].values())
+for chain in m.get("compatibility", {}).values():
+    for step in chain.get("steps", []):
+        for formats in step["assets"].values():
+            urls.update(asset["url"] for asset in formats.values())
+# This same URL set gates uploads and protects referenced assets from cleanup.
 print("\n".join(sorted(urls)))
 PY
 release_assets | sort > "$work/existing"
