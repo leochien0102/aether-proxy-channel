@@ -46,6 +46,41 @@ CHANNEL_ROOT=/path/to/aether-proxy-channel python3 tests/release/test_rc_promoti
 
 执行该命令的当前目录是 app checkout。fake gh / artifact / signer 不访问网络、不发布；测试真实 workflow 脚本及现有 publish/channel 生成器。详见 `reports/T11.12.md`。本卡不修改版本或 `AETHER_PROXY_REF`，不创建真实 tag、不 push、不发布。
 
+## Bridge 资产发布（T11.15）
+
+`scripts/publish.sh` 支持可选环境变量 `COMPATIBILITY_FILE`，原样传给应用仓库的
+`tools/channel/build.py --compatibility <file>`。该文件是 compatibility 对象本身
+（顶层为 `aether-proxy`，不是完整 manifest）；格式、`required_steps`、有序 steps、
+终点版本与资产 hash/size 由 T11.14 builder 校验，并写入最终签名 manifest。
+新的历史 bridge 包放在 JSON 同目录；已发布的资产允许复用，但元数据不能冲突。
+
+维护者准备并审核输入后，调用形式为：
+
+```sh
+COMPATIBILITY_FILE=/path/to/reviewed/compatibility.json \
+  scripts/publish.sh /path/to/app-with-T11.14 /path/to/verified-packages
+```
+
+这是真实发布命令的说明，不是本任务执行的测试命令。需要原有的签名环境和发布权限。
+显式设置为空、文件不存在或非法 JSON 会在任何 release 操作之前失败；链或资产校验失败
+不会签名、上传或切换 manifest。未设置时不传新参数：无链旧清单行为不变；已有链由
+builder 从验签后的旧 manifest 继承，数据更新也不会清掉历史 bridge 包。
+上传、上传后存在性检查、stale 删除共用同一份 URL 集合：packages current/previous、
+data 与全部 compatibility steps；不再被任何部分引用的资产才会清理。
+
+本次不修改 `AETHER_PROXY_REF`、版本、keys 或 RC 资产契约。当前固定的旧应用 ref
+不因此自动获得 T11.14 builder；使用 compatibility 必须明确选择包含 T11.14 的发布工具。
+`promote.yml` 仍只接受现有 RC 资产，没有 compatibility 文件输入或来源；它不会猜测、
+伪造或自动生成 bridge 链。未来接入 RC/维护者提供的文件时，须明确来源、校验资产，
+并在预检与最终发布中使用同一份输入，不能只设置一个指向不存在文件的 workflow 参数。
+
+离线验证（在 app checkout 执行）：
+
+```sh
+CHANNEL_ROOT=/path/to/aether-proxy-channel python3 -m unittest tools.channel.test_build
+CHANNEL_ROOT=/path/to/aether-proxy-channel python3 tests/release/test_rc_promotion.py
+```
+
 ## 许可证
 
 本仓库的脚本与工作流以 **GPL-3.0-or-later** 发布（见 `LICENSE`），与 aether-proxy 相同。
