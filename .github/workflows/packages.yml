@@ -169,6 +169,28 @@ jobs:
           path: packages
           merge-multiple: true
 
+      - name: Stage prebuilt aether-dns packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # aether-dns is built by its own repository. This pipeline only verifies the pinned
+          # release assets and stages them for tools/channel/build.py; it never rebuilds them.
+          . ./AETHER_DNS_RELEASE
+          work="${RUNNER_TEMP}/aether-dns"
+          mkdir -p "$work"
+          gh release download "$TAG" --repo "$REPO" --dir "$work" --pattern 'aether-dns*'
+          ( cd "$work" && sha256sum -c "$GITHUB_WORKSPACE/AETHER_DNS_SHA256SUMS" )
+          for arch in aarch64_generic x86_64; do
+            mkdir -p "packages/$arch/channel"
+            cp "$work/aether-dns_${VERSION}_${arch}.ipk" "packages/$arch/channel/"
+            cp "$work/aether-dns-${VERSION}_${arch}.apk" "packages/$arch/channel/"
+          done
+          # The virtual provider must survive packaging; otherwise 1.0.0's dependency is unmet.
+          tar xzOf "packages/x86_64/channel/aether-dns_${VERSION}_x86_64.ipk" ./control.tar.gz \
+            | tar xzO ./control | grep -qx 'Provides: dns-engine'
+          [ "$(head -c 3 "packages/x86_64/channel/aether-dns-${VERSION}_x86_64.apk")" = "ADB" ]
+
       - name: Build usign
         run: scripts/usign.sh "$RUNNER_TEMP/usign"
 
