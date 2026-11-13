@@ -10,6 +10,8 @@ on:
       - main
     paths:
       - 'AETHER_PROXY_REF'
+      - 'AETHER_DNS_RELEASE'
+      - 'AETHER_DNS_SHA256SUMS'
       - 'keys/**'
       - 'scripts/**'
       - '.github/workflows/packages.yml'
