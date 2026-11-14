@@ -1,6 +1,6 @@
 name: packages
 
-# Build aether-xray, chinadns-ng (manual-install only) and the aether-proxy packages with the official SDKs, gate the Xray version
+# Build aether-dns, aether-xray, chinadns-ng (manual-install only) and the aether-proxy packages with the official SDKs, gate the Xray version
 # against aether-proxy's golden configs, and (on main only) publish them to channel-stable.
 # Pull requests and dispatches on other branches never see the signing key and never publish.
 
@@ -10,8 +10,6 @@ on:
       - main
     paths:
       - 'AETHER_PROXY_REF'
-      - 'AETHER_DNS_RELEASE'
-      - 'AETHER_DNS_SHA256SUMS'
       - 'keys/**'
       - 'scripts/**'
       - '.github/workflows/packages.yml'
@@ -48,6 +46,7 @@ jobs:
           set -eu
           cp -a src/aether-proxy/aether-xray ./aether-xray
           cp -a src/aether-proxy/chinadns-ng ./chinadns-ng
+          cp -a src/aether-proxy/aether-dns ./aether-dns
 
       - name: Go toolchain satisfies Xray's go.mod
         run: |
@@ -75,7 +74,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The feed is the whole workspace: aether-xray/ and chinadns-ng/ are copied
+      # The feed is the whole workspace: aether-dns/, aether-xray/ and chinadns-ng/ are copied
       # from the pinned application checkout below, which also provides aether-proxy/ and
       # luci-app-aether-proxy/. Full history: luci.mk versions the translation
       # package from the git log of po/.
@@ -91,13 +90,14 @@ jobs:
           set -eu
           cp -a src/aether-proxy/aether-xray ./aether-xray
           cp -a src/aether-proxy/chinadns-ng ./chinadns-ng
+          cp -a src/aether-proxy/aether-dns ./aether-dns
 
       - name: Build packages
         uses: openwrt/gh-action-sdk@f5813d30eeef3534b58ac7e79c5d8842b6035434 # v11
         env:
           ARCH: ${{ matrix.arch }}-${{ matrix.sdk }}
           FEEDNAME: channel
-          PACKAGES: aether-xray chinadns-ng aether-proxy luci-app-aether-proxy
+          PACKAGES: aether-dns aether-xray chinadns-ng aether-proxy luci-app-aether-proxy
 
       - name: Check that every package was built
         env:
@@ -108,13 +108,42 @@ jobs:
           dir="bin/packages/$ARCH/channel"
           ls -la "$dir"
           # 24.10 SDKs produce ipk, 25.12 SDKs apk; check the one this SDK makes.
-          for package in aether-xray chinadns-ng aether-proxy luci-app-aether-proxy luci-i18n-aether-proxy-zh-cn; do
+          for package in aether-dns aether-xray chinadns-ng aether-proxy luci-app-aether-proxy luci-i18n-aether-proxy-zh-cn; do
             case "$SDK" in
               24.*) pattern="$dir/${package}_*.ipk" ;;
               *) pattern="$dir/${package}-[0-9]*.apk" ;;
             esac
             compgen -G "$pattern" >/dev/null || { echo "::error::$package missing in $dir ($pattern)"; exit 1; }
           done
+
+      - name: Built aether-dns matches the Makefile version
+        env:
+          ARCH: ${{ matrix.arch }}
+          SDK: ${{ matrix.sdk }}
+        run: |
+          set -euo pipefail
+          makefile=src/aether-proxy/aether-dns/Makefile
+          version=$(sed -n 's/^PKG_VERSION:=//p' "$makefile")
+          release=$(sed -n 's/^PKG_RELEASE:=//p' "$makefile")
+          [ -n "$version" ] && [ -n "$release" ] || { echo "::error::Missing aether-dns Makefile version/release"; exit 1; }
+          dir="bin/packages/$ARCH/channel"
+          shopt -s nullglob
+          case "$SDK" in
+            24.*) files=("$dir"/aether-dns_*.ipk) ;;
+            *) files=("$dir"/aether-dns-[0-9]*.apk) ;;
+          esac
+          [ "${#files[@]}" -eq 1 ] || { echo "::error::Expected exactly one aether-dns package in $dir"; exit 1; }
+          file=${files[0]##*/}
+          case "$SDK" in
+            24.*) got=${file#aether-dns_}; got=${got%_${ARCH}.ipk} ;;
+            *) got=${file#aether-dns-}; got=${got%.apk} ;;
+          esac
+          echo "aether-dns: $file; Makefile: $version-$release"
+          # Match canonical_version(): SDKs render releases as -N or -rN.
+          [ "$got" = "$version-$release" ] || [ "$got" = "$version-r$release" ] || {
+            echo "::error::aether-dns version mismatch: got $got, expected $version-$release or $version-r$release"
+            exit 1
+          }
 
       - name: Built aether-xray runs and reports the Makefile version
         if: matrix.arch == 'x86_64' && matrix.sdk == '24.10.8'
@@ -170,28 +199,6 @@ jobs:
           pattern: packages-*
           path: packages
           merge-multiple: true
-
-      - name: Stage prebuilt aether-dns packages
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # aether-dns is built by its own repository. This pipeline only verifies the pinned
-          # release assets and stages them for tools/channel/build.py; it never rebuilds them.
-          . ./AETHER_DNS_RELEASE
-          work="${RUNNER_TEMP}/aether-dns"
-          mkdir -p "$work"
-          gh release download "$TAG" --repo "$REPO" --dir "$work" --pattern 'aether-dns*'
-          ( cd "$work" && sha256sum -c "$GITHUB_WORKSPACE/AETHER_DNS_SHA256SUMS" )
-          for arch in aarch64_generic x86_64; do
-            mkdir -p "packages/$arch/channel"
-            cp "$work/aether-dns_${VERSION}_${arch}.ipk" "packages/$arch/channel/"
-            cp "$work/aether-dns-${VERSION}_${arch}.apk" "packages/$arch/channel/"
-          done
-          # The virtual provider must survive packaging; otherwise 1.0.0's dependency is unmet.
-          tar xzOf "packages/x86_64/channel/aether-dns_${VERSION}_x86_64.ipk" ./control.tar.gz \
-            | tar xzO ./control | grep -qx 'Provides: dns-engine'
-          [ "$(head -c 3 "packages/x86_64/channel/aether-dns-${VERSION}_x86_64.apk")" = "ADB" ]
 
       - name: Build usign
         run: scripts/usign.sh "$RUNNER_TEMP/usign"

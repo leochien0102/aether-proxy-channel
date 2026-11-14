@@ -7,7 +7,7 @@
 
 | 内容 | 作用 |
 |---|---|
-| `AETHER_PROXY_REF` | 要打包的 aether-proxy 提交（完整哈希）；包源（含 `aether-xray/`、`chinadns-ng/`）在应用仓库，gate/build 时复制，不在本仓库保存 |
+| `AETHER_PROXY_REF` | 要打包的 aether-proxy 提交（完整哈希）；包源（含 `aether-dns/`、`aether-xray/`、`chinadns-ng/`）在应用仓库，gate/build 时复制，不在本仓库保存 |
 | `keys/` | 通道公钥（文件名为 usign 指纹），发布前验签 |
 | `scripts/publish.sh` | 生成数据与清单、签名、上传（已有资产不覆盖）、清理旧资产 |
 | `.github/workflows/packages.yml` | Xray 版本闸门（`tests/ci/xray.sh`，上游 `xray run -test`）→ SDK 编译 `aether-xray` 等包 → 发布（仅 `main`） |
@@ -18,7 +18,15 @@
 全量固件使用 aether-proxy 应用仓库中的 `aether-xray` 和 `chinadns-ng` 包；应用显式依赖这两个独立包。channel 只负责包的构建、签名与发布，不再维护它们的源码副本。gate 和 build 均在 checkout 固定应用提交后，将 `src/aether-proxy/aether-xray` 和 `src/aether-proxy/chinadns-ng` 同时复制到 feed 根的对应目录，再读取 Makefile 或构建。`chinadns-ng` 保持 2025.08.09、安装 `/usr/bin/chinadns-ng`，版本 bump 也只在应用仓库进行；它仍不自动更新。
 
 **版本 bump 在 aether-proxy 仓库进行**：只改应用仓库的 `aether-xray/Makefile`（版本、源码 hash 和必要的 Go 工具链固定值）；验证合并后，channel 通过更新 `AETHER_PROXY_REF` 选择该提交。channel 原有 `.github/workflows/xray-bump.yml` 已删除，不再定时修改本仓库的 Makefile。
-SDK 构建列表为 `aether-xray chinadns-ng aether-proxy luci-app-aether-proxy`，产物检查另包含 `luci-i18n-aether-proxy-zh-cn`；不再要求构建或产出 `xray-core`。
+SDK 构建列表为 `aether-dns aether-xray chinadns-ng aether-proxy luci-app-aether-proxy`，产物检查另包含 `luci-i18n-aether-proxy-zh-cn`；不再要求构建或产出 `xray-core`。
+
+`aether-dns` 也由固定应用提交中的 proxy feed（`src/aether-proxy/aether-dns/Makefile`）提供：
+gate/build 将其复制到 feed 根目录，与其它包一起由四个 SDK/架构组合构建，
+不再下载或 stage DNS Release 的 ipk/apk。Makefile 下载并校验上游裸二进制；
+DNS 仓库的 Release 只服务人工下载，不作为通道的预构建包来源。
+构建后逐个矩阵检查包文件名版本与 Makefile 的 `PKG_VERSION`、`PKG_RELEASE` 一致
+（沿用生成器的 `-N` / `-rN` 渲染约定），清单收集、哈希与 `current/previous` 滚动使用现有通用逻辑。
+合并本改动时，所有者须一并将 `AETHER_PROXY_REF` 更新为含该 Makefile 的提交；本改动不调整 ref。
 
 `aether-xray` 当前上游版本为 **26.10.31**（release 为 1），不带 feeds/packages 或 feeds/ssr-plus 的补丁。
 产物名为 `aether-xray_*.ipk` / `aether-xray-*.apk`，不会覆盖 feeds/ssr-plus 的 `/usr/bin/xray`，也不自动卸载旧包。
