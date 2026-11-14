@@ -1,17 +1,18 @@
 name: publish-component
+run-name: publish ${{ inputs.tag }}
 
-# Publish packages that were already built by the application repository.
-# No SDK, no compiler, no package build runs here: this workflow only pulls the
-# recorded build artifacts, merges them into the signed manifest and publishes.
+# Publish a component that was built and released by the application repository.
+# No SDK, no compiler, no build: the channel only pulls release assets, verifies them,
+# merges them into the signed manifest and publishes for the online update page.
 on:
   workflow_dispatch:
     inputs:
-      sha:
-        description: '应用仓库中已成功构建的 commit（完整 40 位）'
+      tag:
+        description: '代码仓库的组件 release tag（例如 xray-v26.11.9-r1）'
         required: true
         type: string
-      components:
-        description: '本次发布的组件（空格分隔），例如 aether-xray'
+      component:
+        description: '组件包名（例如 aether-xray）'
         required: true
         type: string
 
@@ -31,49 +32,53 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       APP_REPO: leochien0102/aether-proxy
-      SHA: ${{ inputs.sha }}
-      COMPONENTS: ${{ inputs.components }}
+      TAG: ${{ inputs.tag }}
+      COMPONENT: ${{ inputs.component }}
       USIGN_SECRET_KEY: ${{ secrets.USIGN_SECRET_KEY }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate the input and find the recorded build
-        id: gate
+      - name: Validate the input
         run: |
           set -euo pipefail
-          echo "$SHA" | grep -qxE '[0-9a-f]{40}' || { echo '::error::sha must be a full commit'; exit 1; }
-          echo "$COMPONENTS" | grep -qE '^[a-z0-9-]+( [a-z0-9-]+)*$' || { echo '::error::components is empty or malformed'; exit 1; }
-          run=$(gh api --paginate --slurp \
-            "repos/$APP_REPO/actions/workflows/build.yml/runs?head_sha=$SHA&per_page=100" \
-            | jq -s -r '[.[][] | select(.conclusion == "success" and (.event == "push" or .event == "workflow_dispatch"))] | sort_by(.run_number) | last | .id // empty')
-          [ -n "$run" ] || { echo "::error::no successful build.yml run for $SHA"; exit 1; }
-          echo "run=$run" >> "$GITHUB_OUTPUT"
-          echo "using build run $run"
+          echo "$TAG" | grep -qxE '(xray|dns|chinadns-ng)-v[0-9][0-9A-Za-z.+~-]*-r[0-9]+' || { echo '::error::invalid component tag'; exit 1; }
+          echo "$COMPONENT" | grep -qxE '[a-z0-9-]+' || { echo '::error::invalid component'; exit 1; }
 
-      - name: Download the recorded build artifacts
-        run: gh run download "${{ steps.gate.outputs.run }}" --repo "$APP_REPO" --dir artifacts
+      - name: Download and verify the component release
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          gh release download "$TAG" --repo "$APP_REPO" --dir assets --pattern '*.ipk' --pattern '*.apk' --pattern 'SHA256SUMS'
+          ( cd assets && sha256sum -c SHA256SUMS )
+          ls -l assets
 
-      - name: Arrange artifacts in the feed layout
+      - name: Arrange assets in the feed layout
         run: |
           set -euo pipefail
           rm -rf packages
-          for dir in artifacts/packages-*; do
-            arch=${dir##*-}
+          shopt -s nullglob
+          for file in assets/*.ipk assets/*.apk; do
+            base=${file##*/}
+            case "$base" in
+              *_aarch64_generic.*|*-aarch64_generic.*) arch=aarch64_generic ;;
+              *_x86_64.*|*-x86_64.*) arch=x86_64 ;;
+              *) echo "::error::cannot derive the package arch from $base"; exit 1 ;;
+            esac
             mkdir -p "packages/$arch/channel"
-            cp "$dir"/aetherproxy/* "packages/$arch/channel/"
+            cp "$file" "packages/$arch/channel/"
           done
           find packages -type f | sort
 
       - uses: actions/checkout@v4
         with:
           repository: leochien0102/aether-proxy
-          ref: ${{ inputs.sha }}
+          ref: ${{ inputs.tag }}
           path: src/aether-proxy
 
       - name: Build usign
         run: scripts/usign.sh "$RUNNER_TEMP/usign"
 
-      - name: Sign and publish, keeping components this build did not produce
+      - name: Sign and publish, keeping the components this release does not carry
         env:
           USIGN: ${{ runner.temp }}/usign
           KEEP_MISSING: '1'
