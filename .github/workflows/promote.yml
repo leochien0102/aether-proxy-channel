@@ -102,7 +102,7 @@ jobs:
               raise SystemExit('Invalid compatibility asset binding')
           if compat_name is not None:
               files.add(compat_name)
-          expected = 23 if compat_name is not None else 22
+          expected = 27 if compat_name is not None else 26
           if (len(files) != expected
                   or {p.name for p in root.iterdir()} != files
                   or {a['name'] for a in release['assets']} != files):
