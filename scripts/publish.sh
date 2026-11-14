@@ -61,6 +61,7 @@ fi
 # 2. Rule data (generator and sanity checks live in aether-proxy) and the release directory.
 python3 "$src/tools/data/build.py" --out "$work/data" --cache "$work/cache"
 args=(--out "$work/out" --data "$work/data" "${previous[@]}" "${compatibility[@]}")
+[ "${KEEP_MISSING:-}" = 1 ] && args+=(--keep-missing)
 [ -z "$packages" ] || args+=(--packages "$packages")
 python3 "$src/tools/channel/build.py" "${args[@]}"
 if [ -e "$work/out/unchanged" ]; then

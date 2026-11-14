@@ -15,6 +15,11 @@ on:
       - '.github/workflows/packages.yml'
   pull_request:
   workflow_dispatch:
+    inputs:
+      components:
+        description: '只构建这些包（空格分隔）；留空构建全部'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -97,7 +102,7 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}-${{ matrix.sdk }}
           FEEDNAME: channel
-          PACKAGES: aether-dns aether-xray chinadns-ng aether-proxy luci-app-aether-proxy
+          PACKAGES: ${{ inputs.components || 'aether-dns aether-xray chinadns-ng aether-proxy luci-app-aether-proxy' }}
 
       - name: Check that every package was built
         env:
@@ -108,7 +113,10 @@ jobs:
           dir="bin/packages/$ARCH/channel"
           ls -la "$dir"
           # 24.10 SDKs produce ipk, 25.12 SDKs apk; check the one this SDK makes.
-          for package in aether-dns aether-xray chinadns-ng aether-proxy luci-app-aether-proxy luci-i18n-aether-proxy-zh-cn; do
+          # luci.mk only generates the translation package when the LuCI app is built.
+          names="$PACKAGES"
+          case " $PACKAGES " in *" luci-app-aether-proxy "*) names="$names luci-i18n-aether-proxy-zh-cn" ;; esac
+          for package in $names; do
             case "$SDK" in
               24.*) pattern="$dir/${package}_*.ipk" ;;
               *) pattern="$dir/${package}-[0-9]*.apk" ;;
@@ -122,6 +130,7 @@ jobs:
           SDK: ${{ matrix.sdk }}
         run: |
           set -euo pipefail
+          case " $PACKAGES " in *" aether-dns "*) ;; *) echo "aether-dns not built in this run"; exit 0 ;; esac
           makefile=src/aether-proxy/aether-dns/Makefile
           version=$(sed -n 's/^PKG_VERSION:=//p' "$makefile")
           release=$(sed -n 's/^PKG_RELEASE:=//p' "$makefile")
@@ -146,7 +155,7 @@ jobs:
           }
 
       - name: Built aether-xray runs and reports the Makefile version
-        if: matrix.arch == 'x86_64' && matrix.sdk == '24.10.8'
+        if: matrix.arch == 'x86_64' && matrix.sdk == '24.10.8' && contains(format(' {0} ', env.PACKAGES), ' aether-xray ')
         run: |
           set -eu
           want=$(sed -n 's/^PKG_VERSION:=//p' aether-xray/Makefile)
@@ -208,4 +217,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           USIGN: ${{ runner.temp }}/usign
           USIGN_SECRET_KEY: ${{ secrets.USIGN_SECRET_KEY }}
+          # A scoped build compiles a subset; keep the other published entries.
+          KEEP_MISSING: ${{ inputs.components && '1' || '' }}
         run: scripts/publish.sh src/aether-proxy packages
