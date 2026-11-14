@@ -76,6 +76,7 @@ jobs:
           # preflight, the entry checks and any compatibility chain share one definition.
           fetch('tools/channel/build.py')
           fetch('tools/data/build.py')
+          fetch('tools/data/gfw_static4.src.txt')
           sys.path.insert(0, 'publisher/tools')
           from channel.build import canonical_version
           version, revision = versions['aether-proxy']
