@@ -7,7 +7,7 @@
 
 | 内容 | 作用 |
 |---|---|
-| `AETHER_PROXY_REF` | 要打包的 aether-proxy 提交（完整哈希）；包源（含 `aether-xray/`、`chinadns-ng/`）在应用仓库，gate/build 时复制，不在本仓库保存 |
+| `AETHER_PROXY_REF` | 要打包的 aether-proxy 提交（完整哈希）；包源（含 `aether-dns/`、`aether-xray/`、`chinadns-ng/`）在应用仓库，gate/build 时复制，不在本仓库保存 |
 | `keys/` | 通道公钥（文件名为 usign 指纹），发布前验签 |
 | `scripts/publish.sh` | 生成数据与清单、签名、上传（已有资产不覆盖）、清理旧资产 |
 | `.github/workflows/packages.yml` | Xray 版本闸门（`tests/ci/xray.sh`，上游 `xray run -test`）→ SDK 编译 `aether-xray` 等包 → 发布（仅 `main`） |
@@ -18,7 +18,15 @@
 全量固件使用 aether-proxy 应用仓库中的 `aether-xray` 和 `chinadns-ng` 包；应用显式依赖这两个独立包。channel 只负责包的构建、签名与发布，不再维护它们的源码副本。gate 和 build 均在 checkout 固定应用提交后，将 `src/aether-proxy/aether-xray` 和 `src/aether-proxy/chinadns-ng` 同时复制到 feed 根的对应目录，再读取 Makefile 或构建。`chinadns-ng` 保持 2025.08.09、安装 `/usr/bin/chinadns-ng`，版本 bump 也只在应用仓库进行；它仍不自动更新。
 
 **版本 bump 在 aether-proxy 仓库进行**：只改应用仓库的 `aether-xray/Makefile`（版本、源码 hash 和必要的 Go 工具链固定值）；验证合并后，channel 通过更新 `AETHER_PROXY_REF` 选择该提交。channel 原有 `.github/workflows/xray-bump.yml` 已删除，不再定时修改本仓库的 Makefile。
-SDK 构建列表为 `aether-xray chinadns-ng aether-proxy luci-app-aether-proxy`，产物检查另包含 `luci-i18n-aether-proxy-zh-cn`；不再要求构建或产出 `xray-core`。
+SDK 构建列表为 `aether-dns aether-xray chinadns-ng aether-proxy luci-app-aether-proxy`，产物检查另包含 `luci-i18n-aether-proxy-zh-cn`；不再要求构建或产出 `xray-core`。
+
+`aether-dns` 也由固定应用提交中的 proxy feed（`src/aether-proxy/aether-dns/Makefile`）提供：
+gate/build 将其复制到 feed 根目录，与其它包一起由四个 SDK/架构组合构建，
+不再下载或 stage DNS Release 的 ipk/apk。Makefile 下载并校验上游裸二进制；
+DNS 仓库的 Release 只服务人工下载，不作为通道的预构建包来源。
+构建后逐个矩阵检查包文件名版本与 Makefile 的 `PKG_VERSION`、`PKG_RELEASE` 一致
+（沿用生成器的 `-N` / `-rN` 渲染约定），清单收集、哈希与 `current/previous` 滚动使用现有通用逻辑。
+合并本改动时，所有者须一并将 `AETHER_PROXY_REF` 更新为含该 Makefile 的提交；本改动不调整 ref。
 
 `aether-xray` 当前上游版本为 **26.10.31**（release 为 1），不带 feeds/packages 或 feeds/ssr-plus 的补丁。
 产物名为 `aether-xray_*.ipk` / `aether-xray-*.apk`，不会覆盖 feeds/ssr-plus 的 `/usr/bin/xray`，也不自动卸载旧包。
@@ -110,6 +118,30 @@ app 仓库**尚未登记任何链**（`bridges/compatibility.json` 不存在）�
 在全部步骤的 ipk+apk 字节可核对后由维护者提交，此前 promote 走无链路径。测试
 里的链是合成 fixture，不代表已发布的链。`COMPATIBILITY_FILE` 手工发布路径
 （上一节）不变。
+
+## C1 本地验证记录
+
+本次仅完成 feed 构建路径及离线验证，未运行 SDK、签名、发布或 push。
+
+- `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/packages.yml'))"`：通过；
+  环境未安装 actionlint，另对 workflow 全部 `run` 脚本执行 `bash -n`，通过。
+- 从 workflow 提取实际 DNS 版本检查脚本，以相邻应用 checkout 的 Makefile
+  （`PKG_VERSION=1.0.2`、`PKG_RELEASE=1`）为输入，在临时目录执行四个矩阵共 30 个用例：
+  `-1` / `-r1` 正例通过；错误版本、错误 release、缺包、多版本、缺失 Makefile release，
+  以及 ipk 架构错误均按预期失败。测试使用合成文件名，不验证包内部元数据或二进制。
+- 只读调用应用仓库 `tools/channel/build.py`，用六个包的双架构 ipk/apk 合成文件验证：
+  全部被收集，清单 SHA-256/size 与输入字节一致，更新时旧 `current` 成为 `previous`，
+  同版本重建保留原 `current/previous`。包含后端、LuCI 与翻译包；未修改生成器或清单格式。
+  合成清单版本片段为 `aether-dns: {current: {version: "1.0.2-1"}, previous: {version: "1.0.1-1"}}`，
+  仅用于验证滚动逻辑，不是真实发布清单。
+- 旧 DNS pin 引用检查：除 `.git` 历史和 `docs/tasks/C1-aether-dns-from-feed.md`
+  的旧流程背景、删除要求外无匹配；任务卡按允许改动范围保留原文。
+- 删除项：两个 DNS pin 文件、workflow 对应的两条 `paths`、完整 DNS staging 步骤。
+  `git diff --check` 通过；`AETHER_PROXY_REF` 与 `scripts/publish.sh` 未改动。
+
+真实 Actions **运行 ID：无（未触发）**；真实产物哈希与发布清单片段尚不可提供，
+不能用合成数据替代验收。合并时所有者更新 ref 后，仍须核验四个 SDK/架构组合成功、
+DNS 产物与 Makefile 版本一致、清单哈希匹配，以及真实 `previous` 正确滚动。
 
 ## 许可证
 
