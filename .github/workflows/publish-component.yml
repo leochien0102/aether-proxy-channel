@@ -1,0 +1,80 @@
+name: publish-component
+
+# Publish packages that were already built by the application repository.
+# No SDK, no compiler, no package build runs here: this workflow only pulls the
+# recorded build artifacts, merges them into the signed manifest and publishes.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: '应用仓库中已成功构建的 commit（完整 40 位）'
+        required: true
+        type: string
+      components:
+        description: '本次发布的组件（空格分隔），例如 aether-xray'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    concurrency:
+      group: channel-publish
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APP_REPO: leochien0102/aether-proxy
+      SHA: ${{ inputs.sha }}
+      COMPONENTS: ${{ inputs.components }}
+      USIGN_SECRET_KEY: ${{ secrets.USIGN_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the input and find the recorded build
+        id: gate
+        run: |
+          set -euo pipefail
+          echo "$SHA" | grep -qxE '[0-9a-f]{40}' || { echo '::error::sha must be a full commit'; exit 1; }
+          echo "$COMPONENTS" | grep -qE '^[a-z0-9-]+( [a-z0-9-]+)*$' || { echo '::error::components is empty or malformed'; exit 1; }
+          run=$(gh api --paginate --slurp \
+            "repos/$APP_REPO/actions/workflows/build.yml/runs?head_sha=$SHA&per_page=100" \
+            | jq -s -r '[.[][] | select(.conclusion == "success" and (.event == "push" or .event == "workflow_dispatch"))] | sort_by(.run_number) | last | .id // empty')
+          [ -n "$run" ] || { echo "::error::no successful build.yml run for $SHA"; exit 1; }
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "using build run $run"
+
+      - name: Download the recorded build artifacts
+        run: gh run download "${{ steps.gate.outputs.run }}" --repo "$APP_REPO" --dir artifacts
+
+      - name: Arrange artifacts in the feed layout
+        run: |
+          set -euo pipefail
+          rm -rf packages
+          for dir in artifacts/packages-*; do
+            arch=${dir##*-}
+            mkdir -p "packages/$arch/channel"
+            cp "$dir"/aetherproxy/* "packages/$arch/channel/"
+          done
+          find packages -type f | sort
+
+      - uses: actions/checkout@v4
+        with:
+          repository: leochien0102/aether-proxy
+          ref: ${{ inputs.sha }}
+          path: src/aether-proxy
+
+      - name: Build usign
+        run: scripts/usign.sh "$RUNNER_TEMP/usign"
+
+      - name: Sign and publish, keeping components this build did not produce
+        env:
+          USIGN: ${{ runner.temp }}/usign
+          KEEP_MISSING: '1'
+        run: scripts/publish.sh src/aether-proxy packages
