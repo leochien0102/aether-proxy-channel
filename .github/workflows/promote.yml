@@ -225,12 +225,10 @@ jobs:
                       if path.read_bytes() != (old / path.name).read_bytes():
                           raise SystemExit('Existing asset has different bytes: ' + path.name)
           PY
-      - name: Install signing verifier (no compilation)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y usign
+      - name: Build the signed-manifest verifier (no compilation of the app)
+        run: scripts/usign.sh "$RUNNER_TEMP/usign"
       - name: Sign and publish verified packages
         env:
-          USIGN: /usr/bin/usign
+          USIGN: ${{ runner.temp }}/usign
           USIGN_SECRET_KEY: ${{ secrets.USIGN_SECRET_KEY }}
         run: scripts/publish.sh publisher packages
