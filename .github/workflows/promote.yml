@@ -69,7 +69,8 @@ jobs:
               text = fetch(name + '/Makefile')
               return tuple(re.search(r'^' + key + r':=(\S+)$', text, re.M)[1]
                            for key in ['PKG_VERSION', 'PKG_RELEASE'])
-          names = ['aether-proxy', 'luci-app-aether-proxy', 'luci-i18n-aether-proxy-zh-cn', 'aether-xray', 'chinadns-ng']
+          names = ['aether-proxy', 'luci-app-aether-proxy', 'luci-i18n-aether-proxy-zh-cn', 'aether-xray', 'chinadns-ng',
+                   'aether-dns']
           versions = {name: fields(name) for name in names if name != names[2]}
           # The canonical-version rule comes from the same RC commit as the builder, so
           # preflight, the entry checks and any compatibility chain share one definition.
@@ -88,7 +89,7 @@ jobs:
               raise SystemExit('Formal tag/RC commit mismatch')
           entries = manifest['assets']
           expected = {(n, a, f) for n in names for a in ['aarch64_generic', 'x86_64'] for f in ['ipk', 'apk']}
-          if len(entries) != 20 or {(e['package'], e['arch'], e['format']) for e in entries} != expected:
+          if len(entries) != 24 or {(e['package'], e['arch'], e['format']) for e in entries} != expected:
               raise SystemExit('Incomplete/duplicate RC package matrix')
           if any(len({e['version'] for e in entries if e['package'] == n}) != 1 for n in names):
               raise SystemExit('Inconsistent package versions across matrix')
