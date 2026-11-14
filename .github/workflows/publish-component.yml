@@ -59,13 +59,20 @@ jobs:
           shopt -s nullglob
           for file in assets/*.ipk assets/*.apk; do
             base=${file##*/}
-            case "$base" in
-              *_aarch64_generic.*|*-aarch64_generic.*) arch=aarch64_generic ;;
-              *_x86_64.*|*-x86_64.*) arch=x86_64 ;;
-              *) echo "::error::cannot derive the package arch from $base"; exit 1 ;;
+            # Component releases prefix every asset with "<arch>--" so identical apk names stay unique.
+            case "${base%%--*}" in
+              aarch64_generic|x86_64) arch=${base%%--*}; name=${base#*--} ;;
+              *)
+                case "$base" in
+                  *_aarch64_generic.*|*-aarch64_generic.*) arch=aarch64_generic ;;
+                  *_x86_64.*|*-x86_64.*) arch=x86_64 ;;
+                  *) echo "::error::cannot derive the package arch from $base"; exit 1 ;;
+                esac
+                name=$base
+                ;;
             esac
             mkdir -p "packages/$arch/channel"
-            cp "$file" "packages/$arch/channel/"
+            cp "$file" "packages/$arch/channel/$name"
           done
           find packages -type f | sort
 
