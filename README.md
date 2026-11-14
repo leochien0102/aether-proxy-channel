@@ -119,6 +119,30 @@ app 仓库**尚未登记任何链**（`bridges/compatibility.json` 不存在）�
 里的链是合成 fixture，不代表已发布的链。`COMPATIBILITY_FILE` 手工发布路径
 （上一节）不变。
 
+## C1 本地验证记录
+
+本次仅完成 feed 构建路径及离线验证，未运行 SDK、签名、发布或 push。
+
+- `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/packages.yml'))"`：通过；
+  环境未安装 actionlint，另对 workflow 全部 `run` 脚本执行 `bash -n`，通过。
+- 从 workflow 提取实际 DNS 版本检查脚本，以相邻应用 checkout 的 Makefile
+  （`PKG_VERSION=1.0.2`、`PKG_RELEASE=1`）为输入，在临时目录执行四个矩阵共 30 个用例：
+  `-1` / `-r1` 正例通过；错误版本、错误 release、缺包、多版本、缺失 Makefile release，
+  以及 ipk 架构错误均按预期失败。测试使用合成文件名，不验证包内部元数据或二进制。
+- 只读调用应用仓库 `tools/channel/build.py`，用六个包的双架构 ipk/apk 合成文件验证：
+  全部被收集，清单 SHA-256/size 与输入字节一致，更新时旧 `current` 成为 `previous`，
+  同版本重建保留原 `current/previous`。包含后端、LuCI 与翻译包；未修改生成器或清单格式。
+  合成清单版本片段为 `aether-dns: {current: {version: "1.0.2-1"}, previous: {version: "1.0.1-1"}}`，
+  仅用于验证滚动逻辑，不是真实发布清单。
+- 旧 DNS pin 引用检查：除 `.git` 历史和 `docs/tasks/C1-aether-dns-from-feed.md`
+  的旧流程背景、删除要求外无匹配；任务卡按允许改动范围保留原文。
+- 删除项：两个 DNS pin 文件、workflow 对应的两条 `paths`、完整 DNS staging 步骤。
+  `git diff --check` 通过；`AETHER_PROXY_REF` 与 `scripts/publish.sh` 未改动。
+
+真实 Actions **运行 ID：无（未触发）**；真实产物哈希与发布清单片段尚不可提供，
+不能用合成数据替代验收。合并时所有者更新 ref 后，仍须核验四个 SDK/架构组合成功、
+DNS 产物与 Makefile 版本一致、清单哈希匹配，以及真实 `previous` 正确滚动。
+
 ## 许可证
 
 本仓库的脚本与工作流以 **GPL-3.0-or-later** 发布（见 `LICENSE`），与 aether-proxy 相同。
