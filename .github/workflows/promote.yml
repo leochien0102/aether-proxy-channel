@@ -5,20 +5,15 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Published app tag (vVERSION-rN or vVERSION[-rN]-rcN)'
+        description: 'Published app tag (vVERSION-rN)'
         required: true
         type: string
-      publish_target:
-        description: Channel to publish (must match the release tag type)
-        type: choice
-        options: [stable, rc]
-        default: stable
       dry_run:
         description: Validate and print the proposed manifest without publishing
         type: boolean
         default: false
       request_id:
-        description: Optional correlation ID for the release entry points
+        description: Optional correlation ID for the release entry point
         type: string
 
 permissions:
@@ -38,25 +33,18 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       APP_REPO: leochien0102/aether-proxy
       RELEASE_TAG: ${{ inputs.release_tag }}
-      PUBLISH_TARGET: ${{ inputs.publish_target }}
-      DRY_RUN: ${{ inputs.dry_run || false }}
     steps:
       - uses: actions/checkout@v4 # channel only; never checkout app source
-      - name: Download and validate the published Release or RC
+      - name: Download and validate the published formal Release
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import hashlib, json, os, re, shutil, subprocess, sys
+          import hashlib, json, os, re, subprocess, sys
           from pathlib import Path
           repo, tag = os.environ['APP_REPO'], os.environ['RELEASE_TAG']
-          is_rc = bool(re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-r[0-9]+)?-rc[1-9][0-9]*', tag))
-          publish_target = os.environ['PUBLISH_TARGET']
-          if publish_target not in ('stable', 'rc'):
-              raise SystemExit('Invalid publish_target')
-          if (publish_target == 'rc' and not is_rc) or (publish_target == 'stable'
-                  and not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+', tag)):
-              raise SystemExit('Release tag type does not match publish_target')
+          if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+', tag):
+              raise SystemExit('Expected a formal vVERSION-rN tag')
           def api(endpoint):
               return json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/{endpoint}']))
           def resolve(tag):
@@ -69,7 +57,7 @@ jobs:
                   obj = api('git/tags/' + obj['sha'])['object']
               raise SystemExit('Tag does not resolve to commit')
           release = api('releases/tags/' + tag)
-          if release['tag_name'] != tag or release['draft'] is not False or release['prerelease'] is not is_rc:
+          if release['tag_name'] != tag or release['draft'] is not False or release['prerelease'] is not False:
               raise SystemExit('Draft/prerelease status does not match the tag type')
           commit = resolve(tag)
           subprocess.run(['gh', 'release', 'download', tag, '--repo', repo, '--dir', 'download'], check=True)
@@ -89,195 +77,74 @@ jobs:
           names = ['aether-proxy', 'luci-app-aether-proxy', 'luci-i18n-aether-proxy-zh-cn', 'aether-xray', 'chinadns-ng',
                    'aether-dns']
           versions = {name: fields(name) for name in names if name != names[2]}
-          # The canonical-version rule comes from the same RC commit as the builder, so
-          # preflight, the entry checks and any compatibility chain share one definition.
+          # The canonical-version rule comes from the same formal tag commit as the builder, so
+          # preflight and the entry checks share one definition.
           fetch('tools/channel/build.py')
           fetch('tools/data/build.py')
           fetch('tools/data/gfw_static4.src.txt')
           sys.path.insert(0, 'publisher/tools')
-          from channel.build import canonical_version
+          from channel.build import ARCH_ALL, asset_name, canonical_version
           version, revision = versions['aether-proxy']
           target = f'v{version}-r{revision}'
-          if not is_rc:
-              from channel.build import ARCH_ALL, asset_name
-              if tag != target:
-                  raise SystemExit('Formal tag/version mismatch')
-              sums_file = root / 'SHA256SUMS'
-              files = {p.name for p in root.iterdir()} - {'SHA256SUMS'}
-              if len(files) != 18 or {p.name for p in root.iterdir()} != {a['name'] for a in release['assets']}:
-                  raise SystemExit('Expected exactly 18 formal packages (plus optional SHA256SUMS)')
-              inventory = None
-              body = release.get('body') or ''
-              marker = '<!-- aether-release-inventory-v1'
-              if marker in body:
-                  matches = re.findall(re.escape(marker) + r'\r?\n([^\r\n]+)\r?\n-->', body)
-                  if len(matches) != 1 or body.count(marker) != 1:
-                      raise SystemExit('Invalid formal asset inventory')
-                  bound = json.loads(matches[0])
-                  if bound['commit'] != commit or set(bound['assets']) != files:
-                      raise SystemExit('Formal asset inventory does not match tag commit or assets')
-                  inventory = bound['assets']
-              hashes = {}
-              for name in names:
-                  for arch in (['all'] if name in ARCH_ALL else ['aarch64_generic', 'x86_64']):
-                      for kind in ['ipk', 'apk']:
-                          noarch = name in ARCH_ALL
-                          pattern = (rf'{re.escape(name)}_(\S+)_{arch}\.ipk' if kind == 'ipk'
-                                     else rf'{re.escape(name)}-(\S+){"" if noarch else "_" + arch}\.apk')
-                          matches = [(f, re.fullmatch(pattern, f)) for f in files]
-                          matches = [(f, m[1]) for f, m in matches if m]
-                          if len(matches) != 1:
-                              raise SystemExit(f'Missing/duplicate formal package {name}/{arch}/{kind}')
-                          filename, encoded_version = matches[0]
-                          pkg_version = inventory[filename]['version'] if inventory is not None else encoded_version
-                          if asset_name(pkg_version) != encoded_version:
-                              raise SystemExit('Formal asset version does not match its filename')
-                          if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]+', filename) or '..' in filename:
-                              raise SystemExit('Unsafe formal asset name')
-                          if name != names[2]:
-                              canonical_version(*versions[name], pkg_version)
-                          elif not re.fullmatch(r'[0-9][A-Za-z0-9.+~-]*', pkg_version):
-                              raise SystemExit('Invalid translation version')
-                          files.remove(filename)
-                          data = (root / filename).read_bytes()
-                          if not data:
-                              raise SystemExit('Empty formal asset')
-                          hashes[filename] = hashlib.sha256(data).hexdigest()
-                          if inventory is not None and hashes[filename] != inventory[filename]['sha256']:
-                              raise SystemExit('Formal inventory SHA-256 mismatch: ' + filename)
-                          # Restore the SDK filename, including the unsanitized package version.
-                          sdk_name = f'{name}-{pkg_version}.apk' if kind == 'apk' else f'{name}_{pkg_version}_{arch}.ipk'
-                          dest = Path('packages') / ('aarch64_generic' if noarch else arch) / 'formal' / sdk_name
-                          dest.parent.mkdir(parents=True, exist_ok=True); dest.write_bytes(data)
-              if files:
-                  raise SystemExit('Unexpected formal assets')
-              if sums_file.exists():
-                  lines = sums_file.read_text().splitlines()
-                  if len(lines) != 18 or set(lines) != {f'{h}  {f}' for f, h in hashes.items()}:
-                      raise SystemExit('Formal SHA256SUMS mismatch')
-              else:
-                  print('Formal Release has no SHA256SUMS asset; computing all digests from downloaded packages')
-              raise SystemExit(0)
-          manifest = json.loads((root / 'rc-manifest.json').read_text())
-          if manifest['schema'] != 1 or manifest['rc_tag'] != tag or manifest['commit'] != commit:
-              raise SystemExit('RC tag/commit binding mismatch')
-          if (manifest['version'] != version or manifest['target_tag'] != target
-                  or not re.fullmatch(r'v' + re.escape(version) + r'(?:-r' + re.escape(revision) + r')?-rc[1-9][0-9]*', tag)):
-              raise SystemExit('RC target version mismatch')
-          # If the formal tag already exists, it must bind to this exact commit.
-          refs = api('git/matching-refs/tags/' + target)
-          if any(r['ref'] == 'refs/tags/' + target for r in refs) and resolve(target) != commit:
-              raise SystemExit('Formal tag/RC commit mismatch')
-          entries = manifest['assets']
-          if os.environ.get('DRY_RUN') != 'true' and any(e.get('source') != 'built' for e in entries):
-              raise SystemExit('RC contains historically reconciled packages; publish a gate-only RC')
-          expected = {(n, a, f) for n in names for a in ['aarch64_generic', 'x86_64'] for f in ['ipk', 'apk']}
-          if len(entries) != 24 or {(e['package'], e['arch'], e['format']) for e in entries} != expected:
-              raise SystemExit('Incomplete/duplicate RC package matrix')
-          if any(len({e['version'] for e in entries if e['package'] == n}) != 1 for n in names):
-              raise SystemExit('Inconsistent package versions across matrix')
-          files = {e['asset'] for e in entries} | {'rc-manifest.json', 'SHA256SUMS'}
-          # An RC that carries the reviewed bridge chain has one extra asset, bound in rc-manifest.
-          compat_name = manifest.get('compatibility')
-          if compat_name is not None and (not isinstance(compat_name, str)
-                  or not re.fullmatch(r'[A-Za-z0-9._-]+', compat_name)
-                  or compat_name in {e['asset'] for e in entries}):
-              raise SystemExit('Invalid compatibility asset binding')
-          if compat_name is not None:
-              files.add(compat_name)
-          expected = 27 if compat_name is not None else 26
-          if (len(files) != expected
-                  or {p.name for p in root.iterdir()} != files
-                  or {a['name'] for a in release['assets']} != files):
-              raise SystemExit('Prerelease asset set mismatch')
-          sums = {}
-          for line in (root / 'SHA256SUMS').read_text().splitlines():
-              match = re.fullmatch(r'([0-9a-f]{64})  ([A-Za-z0-9._-]+)', line)
-              if not match or match[2] in sums:
-                  raise SystemExit('Invalid checksum list')
-              sums[match[2]] = match[1]
-          if set(sums) != files - {'SHA256SUMS'}:
-              raise SystemExit('Incomplete checksum list')
-          for filename, digest in sums.items():
-              if hashlib.sha256((root / filename).read_bytes()).hexdigest() != digest:
-                  raise SystemExit('RC hash mismatch: ' + filename)
-          for e in entries:
-              n, a, f, filename, v = (e[k] for k in ['package', 'arch', 'format', 'filename', 'version'])
-              if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.+~_-]*\.' + f, filename) or '..' in filename:
-                  raise SystemExit('Unsafe package filename')
-              pkg_arch = 'all' if n in names[:3] else a
-              want_name = f'{n}_{v}_{pkg_arch}.ipk' if f == 'ipk' else f'{n}-{v}.apk'
-              if filename != want_name or e['asset'] != a + '--' + re.sub(r'[^A-Za-z0-9._-]', '.', filename):
-                  raise SystemExit('Package name/architecture mismatch')
-              if n != names[2]:
-                  # Same canonical rule as the RC workflow: the filename version is the
-                  # version, rendered as -<release> or -r<release> by the build system.
-                  base, rev = versions[n]
-                  try:
-                      v = canonical_version(base, rev, v)
-                  except ValueError as exc:
-                      raise SystemExit(f'Package version mismatch: {filename}: {exc}')
-              elif not re.fullmatch(r'[0-9][A-Za-z0-9.+~_-]*', v):
-                  raise SystemExit('Invalid translation version')
-              data = (root / e['asset']).read_bytes()
-              if hashlib.sha256(data).hexdigest() != e['sha256']:
-                  raise SystemExit('Manifest hash mismatch')
-          # The reviewed bridge chain rides the prerelease (rc-manifest binds the asset). Every
-          # step asset must be the signed aether-proxy bytes: the built target comes from the RC,
-          # historical steps come from the existing stable channel. Anything missing or tampered
-          # fails here, before preflight, signing or any release operation. No app checkout, no
-          # SDK, no compilation: only already-built bytes are moved and verified.
-          if compat_name is not None:
-              try:
-                  value = json.loads((root / compat_name).read_text())
-              except json.JSONDecodeError as exc:
-                  raise SystemExit(f'compatibility asset is not valid JSON: {exc}')
-              chain = value.get('aether-proxy') if isinstance(value, dict) else None
-              steps = chain.get('steps') if isinstance(chain, dict) else None
-              if not isinstance(steps, list) or not steps:
-                  raise SystemExit('Compatibility asset has no bridge steps')
-              # Version correspondence: the chain's terminal step is the RC's built
-              # aether-proxy (canonical version), devices compare it against their exact
-              # installed string; the formal tag (v<version>-r<release>) is a separate
-              # convention already bound via target_tag above.
-              built = next(e['version'] for e in entries if e['package'] == 'aether-proxy')
-              terminal = steps[-1].get('version') if isinstance(steps[-1], dict) else None
-              if terminal != built:
-                  raise SystemExit(f'Compatibility chain terminal step must be the built aether-proxy {built}')
-              bridge = Path('bridge'); bridge.mkdir()
-              shutil.copyfile(root / compat_name, bridge / 'compatibility.json')
-              for step in steps:
-                  version = step.get('version') if isinstance(step, dict) else None
-                  assets = step.get('assets') if isinstance(step, dict) else None
-                  formats = assets.get('all') if isinstance(assets, dict) else None
-                  if not isinstance(formats, dict) or set(formats) != {'ipk', 'apk'}:
-                      raise SystemExit(f'Bridge step {version}: aether-proxy is noarch and needs ipk and apk assets')
-                  for kind, asset in formats.items():
-                      url = asset.get('url') if isinstance(asset, dict) else None
-                      if (not isinstance(url, str) or not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*\.' + kind, url)
-                              or not isinstance(asset.get('sha256'), str)
-                              or not re.fullmatch(r'[0-9a-f]{64}', asset['sha256'])
-                              or type(asset.get('size')) is not int or asset['size'] <= 0):
-                          raise SystemExit(f'Bridge step {version}: invalid {kind} asset metadata')
-                      dest = bridge / url
-                      source = next((e for e in entries if e['package'] == 'aether-proxy' and e['format'] == kind
-                                     and e['arch'] == 'aarch64_generic'
-                                     and re.sub(r'[^A-Za-z0-9._-]', '.', e['filename']) == url), None)
-                      if source is not None:
-                          shutil.copyfile(root / source['asset'], dest)
-                      elif not dest.is_file():
-                          downloaded = subprocess.run(['gh', 'release', 'download', 'channel-stable',
-                                                       '-p', url, '-D', str(bridge)], capture_output=True)
-                          if downloaded.returncode != 0 or not dest.is_file():
-                              raise SystemExit(f'Bridge asset {url} is neither in the RC prerelease '
-                                               f'nor in the stable channel: {downloaded.stderr.decode(errors="replace").strip()}')
-                      data = dest.read_bytes()
-                      if len(data) != asset['size'] or hashlib.sha256(data).hexdigest() != asset['sha256']:
-                          raise SystemExit(f'Bridge asset hash/size mismatch: {url}')
-              with open(os.environ['GITHUB_ENV'], 'a') as env:
-                  env.write(f'COMPATIBILITY_FILE={bridge.resolve() / "compatibility.json"}\n')
+          if tag != target:
+              raise SystemExit('Formal tag/version mismatch')
+          sums_file = root / 'SHA256SUMS'
+          files = {p.name for p in root.iterdir()} - {'SHA256SUMS'}
+          if len(files) != 18 or {p.name for p in root.iterdir()} != {a['name'] for a in release['assets']}:
+              raise SystemExit('Expected exactly 18 formal packages (plus optional SHA256SUMS)')
+          inventory = None
+          body = release.get('body') or ''
+          marker = '<!-- aether-release-inventory-v1'
+          if marker in body:
+              matches = re.findall(re.escape(marker) + r'\r?\n([^\r\n]+)\r?\n-->', body)
+              if len(matches) != 1 or body.count(marker) != 1:
+                  raise SystemExit('Invalid formal asset inventory')
+              bound = json.loads(matches[0])
+              if bound['commit'] != commit or set(bound['assets']) != files:
+                  raise SystemExit('Formal asset inventory does not match tag commit or assets')
+              inventory = bound['assets']
+          hashes = {}
+          for name in names:
+              for arch in (['all'] if name in ARCH_ALL else ['aarch64_generic', 'x86_64']):
+                  for kind in ['ipk', 'apk']:
+                      noarch = name in ARCH_ALL
+                      pattern = (rf'{re.escape(name)}_(\S+)_{arch}\.ipk' if kind == 'ipk'
+                                 else rf'{re.escape(name)}-(\S+){"" if noarch else "_" + arch}\.apk')
+                      matches = [(f, re.fullmatch(pattern, f)) for f in files]
+                      matches = [(f, m[1]) for f, m in matches if m]
+                      if len(matches) != 1:
+                          raise SystemExit(f'Missing/duplicate formal package {name}/{arch}/{kind}')
+                      filename, encoded_version = matches[0]
+                      pkg_version = inventory[filename]['version'] if inventory is not None else encoded_version
+                      if asset_name(pkg_version) != encoded_version:
+                          raise SystemExit('Formal asset version does not match its filename')
+                      if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]+', filename) or '..' in filename:
+                          raise SystemExit('Unsafe formal asset name')
+                      if name != names[2]:
+                          canonical_version(*versions[name], pkg_version)
+                      elif not re.fullmatch(r'[0-9][A-Za-z0-9.+~-]*', pkg_version):
+                          raise SystemExit('Invalid translation version')
+                      files.remove(filename)
+                      data = (root / filename).read_bytes()
+                      if not data:
+                          raise SystemExit('Empty formal asset')
+                      hashes[filename] = hashlib.sha256(data).hexdigest()
+                      if inventory is not None and hashes[filename] != inventory[filename]['sha256']:
+                          raise SystemExit('Formal inventory SHA-256 mismatch: ' + filename)
+                      # Restore the SDK filename, including the unsanitized package version.
+                      sdk_name = f'{name}-{pkg_version}.apk' if kind == 'apk' else f'{name}_{pkg_version}_{arch}.ipk'
+                      dest = Path('packages') / ('aarch64_generic' if noarch else arch) / 'formal' / sdk_name
+                      dest.parent.mkdir(parents=True, exist_ok=True); dest.write_bytes(data)
+          if files:
+              raise SystemExit('Unexpected formal assets')
+          if sums_file.exists():
+              lines = sums_file.read_text().splitlines()
+              if len(lines) != 18 or set(lines) != {f'{h}  {f}' for f, h in hashes.items()}:
+                  raise SystemExit('Formal SHA256SUMS mismatch')
+          else:
+              print('Formal Release has no SHA256SUMS asset; computing all digests from downloaded packages')
           PY
-      - name: Preview stable or assemble the persistent RC manifest
+      - name: Preview stable current and previous; verify Release bytes
         shell: bash
         run: |
           set -euo pipefail
@@ -295,8 +162,7 @@ jobs:
           # API/download errors fail closed rather than being mistaken for an empty channel.
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > channel-releases.json
           python3 - <<'PY'
-          import hashlib, json, os, re, subprocess, sys
-          from datetime import datetime, timezone
+          import json, subprocess, sys
           from pathlib import Path
           sys.path.insert(0, 'publisher/tools')
           from channel import build
@@ -313,54 +179,6 @@ jobs:
               previous = build.read_previous(old / 'manifest.json')
               stable_only(previous)
 
-          if os.environ['PUBLISH_TARGET'] == 'rc':
-              root = Path('download')
-              source = json.loads((root / 'rc-manifest.json').read_text())
-              rc = dict(schema=2, generated=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-                        prerelease=True, rc_tag=source['rc_tag'], commit=source['commit'], packages={}, data={})
-              out = Path('rc-channel'); out.mkdir()
-
-              def copy_asset(directory, asset):
-                  name = asset['url']
-                  if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*\.(?:ipk|apk)', name) or '..' in name:
-                      raise SystemExit(f'Unsafe RC channel package filename: {name!r}')
-                  data = (directory / name).read_bytes()
-                  if not data or len(data) != asset['size'] or hashlib.sha256(data).hexdigest() != asset['sha256']:
-                      raise SystemExit('RC channel asset checksum/size mismatch: ' + name)
-                  dest = out / name
-                  if dest.exists() and dest.read_bytes() != data:
-                      raise SystemExit('Conflicting RC channel asset: ' + name)
-                  dest.write_bytes(data)
-
-              for item in source['assets']: # already validated, including all 24 unique cells
-                  name, arch, fmt = (item[k] for k in ('package', 'arch', 'format'))
-                  prior = (previous or {}).get('packages', {}).get(name, {}).get('current')
-                  entry = rc['packages'].setdefault(name, {'current': {'version': item['version'], 'assets': {}},
-                                                           'previous': prior})
-                  # Noarch bytes may differ across SDK builds. Keep both measured RC copies.
-                  asset = dict(url=item['asset'], sha256=item['sha256'], size=(root / item['asset']).stat().st_size)
-                  copy_asset(root, asset)
-                  entry['current']['assets'].setdefault(arch, {})[fmt] = asset
-              for name, entry in sorted(rc['packages'].items()):
-                  prior = entry['previous'] or {}
-                  for formats in prior.get('assets', {}).values():
-                      for asset in formats.values():
-                          copy_asset(old, asset)
-                  current = entry['current']
-                  print(f'{name}: current={current["version"]} previous={prior.get("version", "-")}')
-                  for arch, formats in sorted(current['assets'].items()):
-                      for fmt, asset in sorted(formats.items()):
-                          print(f'  {arch}/{fmt} {asset["sha256"]}  {asset["url"]} (Release = proposed RC)')
-              if compat := os.environ.get('COMPATIBILITY_FILE'):
-                  path = Path(compat)
-                  rc['compatibility'] = json.loads(path.read_text())
-                  build.validate_compatibility(rc['compatibility'], rc['packages'])
-                  for asset in build.compatibility_assets(rc['compatibility']):
-                      copy_asset(path.parent, asset)
-              (out / 'manifest.json').write_bytes(build.canonical_manifest(rc))
-              print(f'RC route: persist {source["rc_tag"]} on channel-rc; no stable writes')
-              raise SystemExit(0)
-
           packages = Path('packages')
           built, _, ignored = build.collect_packages(packages)
           if ignored or set(built) != set(build.PACKAGE_NAMES):
@@ -372,9 +190,8 @@ jobs:
                       raise SystemExit('Same version has different assets: ' + name)
                   if name == 'aether-proxy' and current and build.compatibility_version(candidate['version']) < build.compatibility_version(current['version']):
                       raise SystemExit('Refusing to downgrade channel-stable')
-          compat = os.environ.get('COMPATIBILITY_FILE')
           previous_path = (old / 'manifest.json') if previous else None
-          build.build_to_dir(Path('preflight'), packages, None, previous_path, Path(compat) if compat else None)
+          build.build_to_dir(Path('preflight'), packages, None, previous_path)
           proposed = json.loads(Path('preflight/manifest.json').read_text())
           stable_only(proposed)
           for path in Path('preflight').iterdir():
@@ -392,7 +209,6 @@ jobs:
                           raise SystemExit('Proposed digest differs from Release: ' + asset['url'])
                       print(f'  {arch}/{fmt} {asset["sha256"]}  {asset["url"]} (Release = proposed stable)')
           PY
-          [[ "$PUBLISH_TARGET" == stable ]] || exit 0
           # Guard the *actual* builder used by publish.sh, including previous entries and data.
           mv publisher/tools/channel/build.py publisher/tools/channel/channel_builder.py
           cat > publisher/tools/channel/build.py <<'PY'
@@ -427,23 +243,4 @@ jobs:
           if [[ -f existing/manifest.json ]]; then
             "$USIGN" -V -q -m existing/manifest.json -P keys
           fi
-          delete_rc_if_present() {
-            local releases
-            releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
-            if grep -Fxq channel-rc <<< "$releases"; then
-              gh release delete channel-rc --cleanup-tag --yes
-            fi
-          }
-          if [[ "$PUBLISH_TARGET" == rc ]]; then
-            key=$(mktemp)
-            trap 'rm -f "$key"' EXIT
-            (umask 077; printf '%s\n' "$USIGN_SECRET_KEY" > "$key")
-            "$USIGN" -S -m rc-channel/manifest.json -s "$key"
-            "$USIGN" -V -q -m rc-channel/manifest.json -P keys
-            delete_rc_if_present
-            gh release create channel-rc rc-channel/* --target main --prerelease --latest=false \
-              --title 'aether-proxy channel (RC)' --notes 'Persistent signed RC channel; replaced by the next RC and cleared after stable succeeds.'
-            exit 0
-          fi
           scripts/publish.sh publisher packages
-          delete_rc_if_present
