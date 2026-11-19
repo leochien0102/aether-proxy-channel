@@ -8,6 +8,11 @@ on:
         description: 'Published app tag (vVERSION-rN or vVERSION[-rN]-rcN)'
         required: true
         type: string
+      publish_target:
+        description: Channel to publish (must match the release tag type)
+        type: choice
+        options: [stable, rc]
+        default: stable
       dry_run:
         description: Validate and print the proposed manifest without publishing
         type: boolean
@@ -33,6 +38,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       APP_REPO: leochien0102/aether-proxy
       RELEASE_TAG: ${{ inputs.release_tag }}
+      PUBLISH_TARGET: ${{ inputs.publish_target }}
       DRY_RUN: ${{ inputs.dry_run || false }}
     steps:
       - uses: actions/checkout@v4 # channel only; never checkout app source
@@ -45,8 +51,12 @@ jobs:
           from pathlib import Path
           repo, tag = os.environ['APP_REPO'], os.environ['RELEASE_TAG']
           is_rc = bool(re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-r[0-9]+)?-rc[1-9][0-9]*', tag))
-          if not is_rc and not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+', tag):
-              raise SystemExit('Invalid release tag')
+          publish_target = os.environ['PUBLISH_TARGET']
+          if publish_target not in ('stable', 'rc'):
+              raise SystemExit('Invalid publish_target')
+          if (publish_target == 'rc' and not is_rc) or (publish_target == 'stable'
+                  and not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+', tag)):
+              raise SystemExit('Release tag type does not match publish_target')
           def api(endpoint):
               return json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/{endpoint}']))
           def resolve(tag):
@@ -212,8 +222,6 @@ jobs:
               data = (root / e['asset']).read_bytes()
               if hashlib.sha256(data).hexdigest() != e['sha256']:
                   raise SystemExit('Manifest hash mismatch')
-              dest = Path('packages') / a / 'rc' / filename
-              dest.parent.mkdir(parents=True, exist_ok=True); dest.write_bytes(data)
           # The reviewed bridge chain rides the prerelease (rc-manifest binds the asset). Every
           # step asset must be the signed aether-proxy bytes: the built target comes from the RC,
           # historical steps come from the existing stable channel. Anything missing or tampered
@@ -269,7 +277,7 @@ jobs:
               with open(os.environ['GITHUB_ENV'], 'a') as env:
                   env.write(f'COMPATIBILITY_FILE={bridge.resolve() / "compatibility.json"}\n')
           PY
-      - name: Preview stable current and previous, and enforce channel isolation
+      - name: Preview stable or assemble the persistent RC manifest
         shell: bash
         run: |
           set -euo pipefail
@@ -287,7 +295,8 @@ jobs:
           # API/download errors fail closed rather than being mistaken for an empty channel.
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > channel-releases.json
           python3 - <<'PY'
-          import json, os, subprocess, sys
+          import hashlib, json, os, re, subprocess, sys
+          from datetime import datetime, timezone
           from pathlib import Path
           sys.path.insert(0, 'publisher/tools')
           from channel import build
@@ -303,6 +312,54 @@ jobs:
               subprocess.run(['gh', 'release', 'download', 'channel-stable', '--dir', str(old)], check=True)
               previous = build.read_previous(old / 'manifest.json')
               stable_only(previous)
+
+          if os.environ['PUBLISH_TARGET'] == 'rc':
+              root = Path('download')
+              source = json.loads((root / 'rc-manifest.json').read_text())
+              rc = dict(schema=2, generated=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                        prerelease=True, rc_tag=source['rc_tag'], commit=source['commit'], packages={}, data={})
+              out = Path('rc-channel'); out.mkdir()
+
+              def copy_asset(directory, asset):
+                  name = asset['url']
+                  if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*\.(?:ipk|apk)', name) or '..' in name:
+                      raise SystemExit(f'Unsafe RC channel package filename: {name!r}')
+                  data = (directory / name).read_bytes()
+                  if not data or len(data) != asset['size'] or hashlib.sha256(data).hexdigest() != asset['sha256']:
+                      raise SystemExit('RC channel asset checksum/size mismatch: ' + name)
+                  dest = out / name
+                  if dest.exists() and dest.read_bytes() != data:
+                      raise SystemExit('Conflicting RC channel asset: ' + name)
+                  dest.write_bytes(data)
+
+              for item in source['assets']: # already validated, including all 24 unique cells
+                  name, arch, fmt = (item[k] for k in ('package', 'arch', 'format'))
+                  prior = (previous or {}).get('packages', {}).get(name, {}).get('current')
+                  entry = rc['packages'].setdefault(name, {'current': {'version': item['version'], 'assets': {}},
+                                                           'previous': prior})
+                  # Noarch bytes may differ across SDK builds. Keep both measured RC copies.
+                  asset = dict(url=item['asset'], sha256=item['sha256'], size=(root / item['asset']).stat().st_size)
+                  copy_asset(root, asset)
+                  entry['current']['assets'].setdefault(arch, {})[fmt] = asset
+              for name, entry in sorted(rc['packages'].items()):
+                  prior = entry['previous'] or {}
+                  for formats in prior.get('assets', {}).values():
+                      for asset in formats.values():
+                          copy_asset(old, asset)
+                  current = entry['current']
+                  print(f'{name}: current={current["version"]} previous={prior.get("version", "-")}')
+                  for arch, formats in sorted(current['assets'].items()):
+                      for fmt, asset in sorted(formats.items()):
+                          print(f'  {arch}/{fmt} {asset["sha256"]}  {asset["url"]} (Release = proposed RC)')
+              if compat := os.environ.get('COMPATIBILITY_FILE'):
+                  path = Path(compat)
+                  rc['compatibility'] = json.loads(path.read_text())
+                  build.validate_compatibility(rc['compatibility'], rc['packages'])
+                  for asset in build.compatibility_assets(rc['compatibility']):
+                      copy_asset(path.parent, asset)
+              (out / 'manifest.json').write_bytes(build.canonical_manifest(rc))
+              print(f'RC route: persist {source["rc_tag"]} on channel-rc; no stable writes')
+              raise SystemExit(0)
 
           packages = Path('packages')
           built, _, ignored = build.collect_packages(packages)
@@ -334,15 +391,8 @@ jobs:
                       if candidate['assets'][slot][fmt] != asset:
                           raise SystemExit('Proposed digest differs from Release: ' + asset['url'])
                       print(f'  {arch}/{fmt} {asset["sha256"]}  {asset["url"]} (Release = proposed stable)')
-          if '-rc' in os.environ['RELEASE_TAG']:
-              rc, files, _ = build.build_manifest(packages, None, None)
-              rc['prerelease'] = True
-              out = Path('rc-channel'); out.mkdir()
-              for name, data in files.items():
-                  (out / name).write_bytes(data)
-              (out / 'manifest.json').write_bytes(build.canonical_manifest(rc))
-              print('RC route: stage a single channel-rc manifest, publish stable, then clear channel-rc')
           PY
+          [[ "$PUBLISH_TARGET" == stable ]] || exit 0
           # Guard the *actual* builder used by publish.sh, including previous entries and data.
           mv publisher/tools/channel/build.py publisher/tools/channel/channel_builder.py
           cat > publisher/tools/channel/build.py <<'PY'
@@ -377,19 +427,23 @@ jobs:
           if [[ -f existing/manifest.json ]]; then
             "$USIGN" -V -q -m existing/manifest.json -P keys
           fi
-          if [[ -d rc-channel ]]; then
+          delete_rc_if_present() {
+            local releases
+            releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
+            if grep -Fxq channel-rc <<< "$releases"; then
+              gh release delete channel-rc --cleanup-tag --yes
+            fi
+          }
+          if [[ "$PUBLISH_TARGET" == rc ]]; then
             key=$(mktemp)
             trap 'rm -f "$key"' EXIT
             (umask 077; printf '%s\n' "$USIGN_SECRET_KEY" > "$key")
             "$USIGN" -S -m rc-channel/manifest.json -s "$key"
             "$USIGN" -V -q -m rc-channel/manifest.json -P keys
-            if python3 -c 'import json, sys; sys.exit(not any(r["tag_name"] == "channel-rc" for p in json.load(open("channel-releases.json")) for r in p))'; then
-              gh release delete channel-rc --cleanup-tag --yes
-            fi
+            delete_rc_if_present
             gh release create channel-rc rc-channel/* --target main --prerelease --latest=false \
-              --title 'aether-proxy channel (RC)' --notes 'Temporary signed RC channel; cleared after promotion.'
+              --title 'aether-proxy channel (RC)' --notes 'Persistent signed RC channel; replaced by the next RC and cleared after stable succeeds.'
+            exit 0
           fi
           scripts/publish.sh publisher packages
-          if [[ -d rc-channel ]]; then
-            gh release delete channel-rc --cleanup-tag --yes
-          fi
+          delete_rc_if_present
