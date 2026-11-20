@@ -1,5 +1,5 @@
-name: Promote release
-run-name: Promote ${{ inputs.release_tag }} ${{ inputs.request_id }}
+name: Publish channel
+run-name: Publish channel ${{ inputs.release_tag }} ${{ inputs.request_id }}
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 jobs:
-  promote:
+  publish:
     if: github.ref == 'refs/heads/main' || inputs.dry_run
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -182,7 +182,7 @@ jobs:
           packages = Path('packages')
           built, _, ignored = build.collect_packages(packages)
           if ignored or set(built) != set(build.PACKAGE_NAMES):
-              raise SystemExit('Incomplete promotion package set')
+              raise SystemExit('Incomplete channel package set')
           if previous:
               for name, candidate in built.items():
                   current = previous['packages'].get(name, {}).get('current')
